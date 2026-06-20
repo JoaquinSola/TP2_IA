@@ -1,0 +1,29 @@
+# Secretos y configuración local
+.env
+*.env.local
+*copia.env
+
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Logs del agente
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter (si se usa para pruebas)
+*.ipynb_checkpoints/

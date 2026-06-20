@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>Asistente de Pagos - IA Accesible</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <meta name="description" content="Asistente de pagos con IA para personas con discapacidad visual" />
+</head>
+<body>
+  <header class="app-header" role="banner">
+    <h1>Asistente de Pagos</h1>
+    <p class="subtitle">Asistencia IA para facturas y efectivo en pesos argentinos</p>
+  </header>
+
+  <main class="app-main" role="main">
+    <!-- Tip de uso (solo escritorio) -->
+    <div id="desktop-tip" class="desktop-tip" role="note">
+      <strong>En computadora:</strong> usá los botones para subir fotos de tus facturas o billetes. El botón 📷 abre la webcam directamente.
+      <button class="close-tip" onclick="this.parentElement.remove()" aria-label="Cerrar">✕</button>
+    </div>
+
+    <!-- Chat -->
+    <section class="chat-section" aria-label="Conversación con el asistente">
+      <div id="chat-messages" class="chat-messages" aria-live="polite" aria-label="Mensajes del chat">
+        <div class="message assistant" role="log">
+          <div class="message-bubble">
+            ¡Hola! Soy tu asistente para el pago de facturas en pesos argentinos. Podés sacar una foto de tu factura o contarme qué necesitás.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Área de acciones principales -->
+    <section class="actions-section" aria-label="Acciones principales">
+      <div class="action-buttons">
+        <button id="btn-upload-invoice" class="action-btn primary" aria-label="Subir imagen o PDF de factura">
+          <span class="icon" aria-hidden="true">📄</span>
+          <span>Factura</span>
+        </button>
+        <button id="btn-upload-bills" class="action-btn primary" aria-label="Subir foto de billetes">
+          <span class="icon" aria-hidden="true">💵</span>
+          <span>Billetes</span>
+        </button>
+        <button id="btn-camera" class="action-btn cam" aria-label="Abrir cámara para fotografiar" title="Abrir cámara">
+          <span class="icon" aria-hidden="true">📷</span>
+          <span>Cámara</span>
+        </button>
+        <button id="btn-mic" class="action-btn mic" aria-label="Hablar por micrófono" aria-pressed="false">
+          <span class="icon" aria-hidden="true">🎤</span>
+          <span>Hablar</span>
+        </button>
+        <button id="btn-conversation" class="action-btn conversation" aria-label="Activar modo conversación automática" aria-pressed="false" title="Modo conversación: el micrófono se abre solo después de cada respuesta">
+          <span class="icon" aria-hidden="true">🔄</span>
+          <span>Conversación</span>
+        </button>
+        <button id="btn-reset" class="action-btn secondary" aria-label="Iniciar nueva transacción">
+          <span class="icon" aria-hidden="true">🔄</span>
+          <span>Nueva</span>
+        </button>
+      </div>
+
+      <!-- Inputs de archivo: galería (sin forzar cámara) -->
+      <input type="file" id="input-invoice" accept="image/*,application/pdf" class="hidden-input" aria-hidden="true" />
+      <input type="file" id="input-bills" accept="image/*" class="hidden-input" aria-hidden="true" />
+      <!-- Inputs de captura directa: abre la cámara nativa en mobile (funciona en HTTP) -->
+      <input type="file" id="input-invoice-cam" accept="image/*" capture="environment" class="hidden-input" aria-hidden="true" />
+      <input type="file" id="input-bills-cam" accept="image/*" capture="environment" class="hidden-input" aria-hidden="true" />
+      <!-- Input de audio/video: en Android, capture=microphone puede abrir la cámara en video — Gemini transcribe ambos -->
+      <input type="file" id="input-audio" accept="audio/*,video/mp4,video/3gpp,video/3gpp2,video/webm" capture="microphone" class="hidden-input" aria-hidden="true" />
+    </section>
+
+    <!-- Barra de entrada de texto -->
+    <section class="input-section" aria-label="Escribir mensaje">
+      <div class="input-row">
+        <textarea
+          id="text-input"
+          class="text-input"
+          placeholder="Escribí tu mensaje acá... (Enter para enviar)"
+          rows="1"
+          aria-label="Escribir mensaje al asistente"
+        ></textarea>
+        <button id="btn-send" class="send-btn" aria-label="Enviar mensaje">
+          <span aria-hidden="true">➤</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- Preview de imagen -->
+    <div id="image-preview-container" class="image-preview-container hidden" aria-label="Vista previa de imagen">
+      <div class="preview-info">
+        <span id="preview-label" class="preview-label">Imagen lista</span>
+        <button id="btn-clear-image" class="clear-image-btn" aria-label="Eliminar imagen seleccionada">✕</button>
+      </div>
+      <img id="image-preview" alt="Vista previa de imagen cargada" />
+    </div>
+
+    <!-- Modal de cámara: mobile muestra elección nativa, desktop muestra webcam -->
+    <div id="camera-modal" class="camera-modal hidden" role="dialog" aria-label="Fotografiar con la cámara" aria-modal="true">
+      <div class="camera-modal-content">
+        <div class="camera-header">
+          <span>¿Qué vas a fotografiar?</span>
+          <button id="btn-close-camera" class="close-btn" aria-label="Cerrar cámara">✕</button>
+        </div>
+
+        <!-- Mobile: botones que disparan la cámara nativa del dispositivo -->
+        <div id="camera-choice-mobile" class="camera-controls hidden">
+          <button id="btn-capture-invoice-mobile" class="capture-btn primary" aria-label="Fotografiar factura con la cámara del celular">
+            📄 Fotografiar Factura
+          </button>
+          <button id="btn-capture-bills-mobile" class="capture-btn primary" aria-label="Fotografiar billetes con la cámara del celular">
+            💵 Fotografiar Billetes
+          </button>
+        </div>
+
+        <!-- Desktop: stream de webcam + botones de captura -->
+        <video id="camera-video" autoplay playsinline muted aria-label="Vista de cámara" class="hidden"></video>
+        <canvas id="camera-canvas" class="hidden"></canvas>
+        <div id="camera-controls-desktop" class="camera-controls hidden">
+          <button id="btn-capture-invoice" class="capture-btn primary" aria-label="Capturar factura con webcam">
+            📄 Capturar Factura
+          </button>
+          <button id="btn-capture-bills" class="capture-btn primary" aria-label="Capturar billetes con webcam">
+            💵 Capturar Billetes
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Indicador de carga -->
+    <div id="loading-indicator" class="loading hidden" aria-live="polite" aria-label="El asistente está procesando">
+      <div class="loading-dots"><span></span><span></span><span></span></div>
+      <span>Procesando con Gemini AI...</span>
+    </div>
+
+    <!-- Panel de resultados de pago -->
+    <div id="payment-panel" class="payment-panel hidden" role="complementary" aria-label="Resultado del cálculo de pago">
+      <h2>Resultado del Pago</h2>
+      <div id="payment-details"></div>
+    </div>
+  </main>
+
+  <!-- Panel de observabilidad -->
+  <details class="obs-panel" aria-label="Panel de observabilidad del agente">
+    <summary>Ver trazas del agente (observabilidad)</summary>
+    <div id="obs-content" class="obs-content">
+      <button id="btn-load-logs" class="load-logs-btn">Cargar logs de esta sesión</button>
+      <pre id="obs-logs" class="obs-logs"></pre>
+    </div>
+  </details>
+
+  <!-- Overlay de cámara por voz: el tap aquí SÍ es gesto válido para el file picker -->
+  <div id="voice-camera-overlay" class="voice-cam-overlay hidden" role="button" tabindex="0">
+    <div class="voice-cam-content">
+      <div class="voice-cam-icon" aria-hidden="true">📷</div>
+      <p id="voice-camera-text">Toca para abrir la cámara</p>
+    </div>
+  </div>
+
+  <!-- Pantalla de inicio accesible: un toque arranca todo -->
+  <div id="accessibility-overlay" class="acc-overlay" role="button" tabindex="0"
+       aria-label="Toca en cualquier lugar para iniciar el asistente por voz">
+    <div class="acc-overlay-content">
+      <div class="acc-icon" aria-hidden="true">🎤</div>
+      <h2>Asistente de Pagos</h2>
+      <p class="acc-main-text">Toca en cualquier lugar para comenzar</p>
+      <p class="acc-sub-text">Todo se maneja por voz</p>
+    </div>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+
+    -Implementación base del agente,
+    -Flujo de interacción con el LLM
+    -Implementación del módulo de contexto y manejo del ambiente,
+    -Conexiones externas necesarias (APIs, base de datos, etc.),
+    Workflow.
+    -Integración de herramientas (tools) y fuentes externas (RAG),
+
+    -Loop / estrategia de razonamiento del agente
+    -Logging básico de las llamadas al LLM y tools
