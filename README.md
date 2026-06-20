@@ -10,7 +10,7 @@ Valentina Ducasse · Wenceslao Echevarría · Nicolás García · Joaquín Sola 
 Agente inteligente que asiste a personas con discapacidad visual en la gestión y pago de facturas de servicios. Procesa imágenes de facturas físicas y digitales (PDF), identifica billetes en efectivo y calcula la combinación óptima de pago.
 
 **Stack tecnológico:**
-- LLM: Gemini 1.5 Flash (multimodal) — Google AI
+- LLM: Llama 3.3 y Llama 4 Scout (multimodal) — Groq
 - Orquestador: LangGraph (grafo de estados)
 - Backend: FastAPI (Python 3.10+)
 - RAG: BM25 sobre base de conocimiento de proveedores argentinos
@@ -21,7 +21,7 @@ Agente inteligente que asiste a personas con discapacidad visual en la gestión 
 ## Requisitos
 
 - Python 3.10 o superior
-- API Key de Gemini (obtener en [Google AI Studio](https://aistudio.google.com/app/apikey))
+- API Key de Groq (obtener en [Groq Console](https://console.groq.com/keys))
 
 ---
 
@@ -41,7 +41,7 @@ pip install -r requirements.txt
 
 # 4. Configurar variables de entorno
 copy .env.example .env
-# Editar .env y completar GEMINI_API_KEY con tu clave
+# Editar .env y completar GROQ_API_KEY con tu clave
 ```
 
 ---
@@ -74,9 +74,9 @@ Usuario (voz/texto/imagen)
         ↓
    [LangGraph Graph]
     ├── rag_node        → Recupera contexto (BM25 sobre proveedores AR)
-    ├── agent_node      → Gemini decide qué tool invocar
-    ├── extract_invoice → Tool: extraer_datos_factura (Gemini multimodal)
-    ├── identify_bills  → Tool: identificar_billetes (Gemini multimodal)
+    ├── agent_node      → LLM (Llama) decide qué tool invocar
+    ├── extract_invoice → Tool: extraer_datos_factura (Llama Vision multimodal)
+    ├── identify_bills  → Tool: identificar_billetes (Llama Vision multimodal)
     ├── calculate       → Tool: calcular_cambio_y_pago (Python determinístico)
     └── respond         → Respuesta final al usuario
         ↓
@@ -87,8 +87,8 @@ Usuario (voz/texto/imagen)
 
 | Tool | Tipo | Descripción |
 |------|------|-------------|
-| `extraer_datos_factura` | LLM (Gemini) | Extrae entidad, monto y vencimiento de factura |
-| `identificar_billetes` | LLM (Gemini) | Identifica denominación y posición de cada billete |
+| `extraer_datos_factura` | LLM (Llama) | Extrae entidad, monto y vencimiento de factura |
+| `identificar_billetes` | LLM (Llama) | Identifica denominación y posición de cada billete |
 | `calcular_cambio_y_pago` | Determinístico (Python) | Calcula combinación óptima de pago y vuelto exacto |
 
 ## Endpoints API

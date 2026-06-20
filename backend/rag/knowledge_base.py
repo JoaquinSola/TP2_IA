@@ -1,7 +1,7 @@
 """
 Módulo RAG (Retrieval-Augmented Generation).
 Utiliza BM25 para recuperar contexto relevante sobre proveedores de servicios
-argentinos y billetes, que se inyecta en los prompts de Gemini.
+argentinos y billetes, que se inyecta en los prompts de Llama.
 """
 from rank_bm25 import BM25Okapi
 
