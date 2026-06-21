@@ -135,21 +135,19 @@ async function speak(text) {
    La alternativa confiable es el botón de micrófono del teclado virtual.
 ═══════════════════════════════════════════════════════════════════════════ */
 
-// Palabras clave para disparar la cámara por voz
+// Palabras clave para disparar la cámara por voz (Soporta Regex para máxima compatibilidad)
 const INVOICE_CAMERA_WORDS = [
-  'foto factura', 'fotografiar factura', 'foto de la factura', 'foto de factura',
-  'sacar factura', 'capturar factura', 'escanear factura', 'analizar factura',
-  'sacar foto factura', 'abrir camara factura', 'abrir cámara factura',
+  /(foto|fotografiar|sacar|leer|ver|escanear|analizar|quiero).*(factura|boleta|recibo)/i,
 ];
 const BILLS_CAMERA_WORDS = [
-  'foto billete', 'foto billetes', 'fotografiar billete', 'foto de los billetes',
-  'foto del dinero', 'foto de la plata', 'foto de los billetes', 'foto billete',
-  'sacar billete', 'capturar billete', 'sacar foto billete', 'abrir camara billete',
-  'abrir cámara billete', 'foto del efectivo',
+  /(foto|fotografiar|sacar|leer|ver|quiero).*(billete|plata|dinero|efectivo)/i,
 ];
 
 function matchVoiceCmd(text, keywords) {
-  return keywords.some(kw => text.includes(kw));
+  return keywords.some(kw => {
+    if (kw instanceof RegExp) return kw.test(text);
+    return text.includes(kw);
+  });
 }
 
 function initSpeechRecognition() {
@@ -467,7 +465,7 @@ async function sendMessage() {
 function renderPaymentPanel(payment) {
   if (!payment) return;
   paymentPanel.classList.remove('hidden');
-  const fmt = (n) => '$' + Number(n).toLocaleString('es-AR');
+  const fmt = (n) => Number(n).toLocaleString('es-AR');
   const rows = [
     { label: 'Monto factura', value: fmt(payment.total_required) + ' pesos', cls: '' },
     { label: 'Efectivo disponible', value: fmt(payment.total_available) + ' pesos', cls: payment.sufficient ? 'ok' : 'danger' },
@@ -554,10 +552,9 @@ async function startAccessibilityMode() {
 
   // Mensaje de bienvenida completo con instrucciones de uso táctil
   const welcome = [
-    'Bienvenido al asistente de pagos.',
-    'Para analizar una factura, tocá el botón Factura, abajo a la izquierda.',
-    'Para identificar billetes, tocá el botón Billetes, en el centro.',
-    'Podés hablarme cuando quieras. Empecemos.'
+    'Hola, soy tu asistente de pagos.',
+    'Puedo leer tus facturas e identificar tus billetes.',
+    'Decime qué necesitás.'
   ].join(' ');
 
   await speak(welcome);

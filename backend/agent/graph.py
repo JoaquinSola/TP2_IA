@@ -49,6 +49,13 @@ def rag_node(state: AgentState) -> dict:
 
 
 def agent_node(state: AgentState) -> dict:
+    # Cortocircuito: si hay imágenes pendientes, rutear directamente sin consultar el LLM.
+    # El LLM no es necesario ni confiable para esta decisión; las imágenes siempre tienen prioridad.
+    if state.get("invoice_image_bytes"):
+        return {"next_action": "extraer_datos_factura", "step": "decidiendo"}
+    if state.get("bills_image_bytes"):
+        return {"next_action": "identificar_billetes", "step": "decidiendo"}
+
     session_id = state["session_id"]
     messages = state["messages"]
     last_msg = messages[-1].content if messages else ""
@@ -61,12 +68,23 @@ def agent_node(state: AgentState) -> dict:
         content = m.content if isinstance(m.content, str) else str(m.content)
         history_text += f"{role}: {content}\n"
 
+    from backend.models.schemas import InvoiceData, Bill as BillModel
+    invoice_raw = state.get("invoice_data")
+    invoice_obj = InvoiceData(**invoice_raw) if invoice_raw else None
+    invoice_summary = format_invoice_summary(invoice_obj) if invoice_obj else "Ninguna"
+
+    bills_raw = state.get("bills_data") or []
+    bills_objs = [BillModel(**b) for b in bills_raw] if bills_raw else []
+    bills_summary = format_bills_summary(bills_objs) if bills_objs else "Ningunos"
+
     prompt = AGENT_DECISION_PROMPT.format(
         has_invoice="Sí" if state.get("invoice_data") else "No",
-        has_bills="Sí" if state.get("bills_data") is not None else "No",
+        has_bills="Sí" if state.get("bills_data") else "No",
         awaiting=state.get("step", "ninguno"),
         has_invoice_image="Sí" if state.get("invoice_image_bytes") else "No",
         has_bills_image="Sí" if state.get("bills_image_bytes") else "No",
+        invoice_summary=invoice_summary,
+        bills_summary=bills_summary,
         user_message=last_msg,
         history=history_text or "(sin historial previo)",
         rag_context=state.get("rag_context", ""),
@@ -102,11 +120,11 @@ def agent_node(state: AgentState) -> dict:
         tokens_used=token_count,
     )
 
-    if raw.startswith("TOOL:extraer_datos_factura"):
+    if "TOOL:extraer_datos_factura" in raw:
         return {"next_action": "extraer_datos_factura", "step": "decidiendo"}
-    elif raw.startswith("TOOL:identificar_billetes"):
+    elif "TOOL:identificar_billetes" in raw:
         return {"next_action": "identificar_billetes", "step": "decidiendo"}
-    elif raw.startswith("TOOL:calcular_cambio_y_pago"):
+    elif "TOOL:calcular_cambio_y_pago" in raw:
         return {"next_action": "calcular_cambio_y_pago", "step": "decidiendo"}
     else:
         return {
@@ -191,7 +209,7 @@ def identify_bills_node(state: AgentState) -> dict:
                 "Asegurate de que los billetes estén sobre una superficie plana con buena iluminación y volvé a fotografiarlos."
             )
         elif not state.get("invoice_data"):
-            response_msg = f"{summary} Ahora necesito que me pases la factura para calcular el pago."
+            response_msg = f"{summary} Si además querés calcular un pago, podés pasarme la factura."
 
         return {
             "bills_data": [b.model_dump() for b in bills],
