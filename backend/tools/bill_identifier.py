@@ -24,23 +24,13 @@ CONTEXTO SOBRE BILLETES ARGENTINOS:
 
 BILLETES DE PESOS ARGENTINOS EN CIRCULACIÓN:
 
-Serie Fauna Argentina (2024-2025, nuevos colores):
-- $1.000 → color azul → Quebracho Colorado
-- $2.000 → color verde oscuro → Pudú
-- $5.000 → color naranja → Taruca
-- $10.000 → color violeta/púrpura → Yaguareté
-- $20.000 → color marrón → Mburucuyá
-- $50.000 → color rojo → Ballena Franca Austral
-- $100.000 → color dorado/amarillo
-- $200.000 → color verde claro
-- $500.000 → denominación de alta gama
-- $1.000.000 → denominación de alta gama
-
-Serie Próceres (anterior, todavía en circulación legal):
-- $100 → Evita / Eva Perón o Roca
-- $200 → Belgrano / San Martín
-- $500 → Belgrano / San Martín / Güemes
-- $1.000 → San Martín (fondo beige/naranja, cara de San Martín)
+- $100 → Colores violeta o marrón. Diseños con Eva Perón, Roca o la Taruca (ciervo).
+- $200 → Color rosado. Diseños con la Ballena Franca Austral o Martín Miguel de Güemes y Juana Azurduy.
+- $500 → Color verde. Diseños con el Yaguareté o Manuel Belgrano y María Remedios del Valle.
+- $1.000 → Color naranja o beige. Diseños con el Hornero o José de San Martín.
+- $2.000 → Color rojo y gris oscuro. Diseños con los médicos Ramón Carrillo y Cecilia Grierson.
+- $10.000 → Color celeste y gris azulado. Diseños con Manuel Belgrano y María Remedios del Valle.
+- $20.000 → Color azul. Diseños con Juan Bautista Alberdi.
 
 INSTRUCCIONES CRÍTICAS:
 1. PRIMERO leé el NÚMERO impreso en el billete (ángulo, color y tamaño del número son pistas secundarias).

@@ -20,15 +20,14 @@ _DOCUMENTS = [
     "AFIP ARBA impuestos nacionales provinciales. Boletas de pago con CUIT contribuyente, concepto, período fiscal, importe.",
 
     # Billetes de Pesos Argentinos en circulación
-    "Billete de 1000 pesos argentinos. Color azul. Muestra el quebracho colorado árbol nacional. Denominación en números grandes.",
-    "Billete de 2000 pesos argentinos. Color verde oscuro. Muestra el pudú, ciervo más pequeño del mundo nativo de Argentina.",
-    "Billete de 5000 pesos argentinos. Color naranja. Muestra la taruca, mamífero andino en peligro de extinción.",
-    "Billete de 10000 pesos argentinos. Color violeta púrpura. Muestra el yaguareté, felino emblema de la fauna argentina.",
-    "Billete de 20000 pesos argentinos. Color marrón. Muestra el Mburucuyá flor pasionaria emblema floral.",
-    "Billete de 50000 pesos argentinos. Color rojo. Muestra la ballena franca austral, mamífero marino.",
-    "Billete de 100000 pesos argentinos. Color dorado amarillo. Nuevo billete de alta denominación.",
-    "Billete de 200000 pesos argentinos. Color verde claro. Billete de alta denominación en circulación.",
-    "Billetes fuera de curso legal Argentina: billetes anteriores a la serie actual, dólares euros moneda extranjera, billetes de juego Monopoly, tarjetas no son billetes.",
+    "Billete de 100 pesos argentinos. Colores violeta o marrón. Muestra a Eva Perón, Julio Argentino Roca o la Taruca (taruca, ciervo andino).",
+    "Billete de 200 pesos argentinos. Color rosado. Muestra la ballena franca austral o a Martín Miguel de Güemes y Juana Azurduy.",
+    "Billete de 500 pesos argentinos. Color verde. Muestra el yaguareté o a Manuel Belgrano y María Remedios del Valle.",
+    "Billete de 1000 pesos argentinos. Color naranja o beige. Muestra el hornero o a José de San Martín.",
+    "Billete de 2000 pesos argentinos. Color rojo y gris oscuro. Muestra a los médicos Ramón Carrillo y Cecilia Grierson.",
+    "Billete de 10000 pesos argentinos. Color celeste y gris azulado. Muestra a Manuel Belgrano y María Remedios del Valle.",
+    "Billete de 20000 pesos argentinos. Color azul. Muestra a Juan Bautista Alberdi.",
+    "Billetes fuera de curso legal o inválidos en Argentina: dólares, euros, billetes de juego como Monopoly, tarjetas de plástico, monedas y billetes deteriorados ilegibles.",
 
     # Información general de facturas argentinas
     "Los datos más importantes de una factura argentina son: razón social empresa emisora, importe total a pagar, fecha de vencimiento primer vencimiento y segundo vencimiento si aplica. El CUIT es el identificador tributario de la empresa.",
