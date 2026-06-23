@@ -9,14 +9,8 @@ class BillDenomination(int, Enum):
     B500 = 500
     B1000 = 1000
     B2000 = 2000
-    B5000 = 5000
     B10000 = 10000
     B20000 = 20000
-    B50000 = 50000
-    B100000 = 100000
-    B200000 = 200000
-    B500000 = 500000
-    B1000000 = 1000000
 
 
 VALID_DENOMINATIONS = {d.value for d in BillDenomination}
