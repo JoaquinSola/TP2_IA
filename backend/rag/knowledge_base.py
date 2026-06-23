@@ -20,20 +20,49 @@ _DOCUMENTS = [
     "AFIP ARBA impuestos nacionales provinciales. Boletas de pago con CUIT contribuyente, concepto, período fiscal, importe.",
 
     # Billetes de Pesos Argentinos en circulación
-    "Billete de 1000 pesos argentinos. Color azul. Muestra el quebracho colorado árbol nacional. Denominación en números grandes.",
-    "Billete de 2000 pesos argentinos. Color verde oscuro. Muestra el pudú, ciervo más pequeño del mundo nativo de Argentina.",
-    "Billete de 5000 pesos argentinos. Color naranja. Muestra la taruca, mamífero andino en peligro de extinción.",
-    "Billete de 10000 pesos argentinos. Color violeta púrpura. Muestra el yaguareté, felino emblema de la fauna argentina.",
-    "Billete de 20000 pesos argentinos. Color marrón. Muestra el Mburucuyá flor pasionaria emblema floral.",
-    "Billete de 50000 pesos argentinos. Color rojo. Muestra la ballena franca austral, mamífero marino.",
-    "Billete de 100000 pesos argentinos. Color dorado amarillo. Nuevo billete de alta denominación.",
-    "Billete de 200000 pesos argentinos. Color verde claro. Billete de alta denominación en circulación.",
-    "Billetes fuera de curso legal Argentina: billetes anteriores a la serie actual, dólares euros moneda extranjera, billetes de juego Monopoly, tarjetas no son billetes.",
+    "Billete de 10 pesos argentinos. Color marrón predominante. Muestra a Manuel Belgrano o un Guanaco.",
+    "Billete de 20 pesos argentinos. Color rojo predominante. Muestra a Juan Manuel de Rosas o un Guanaco.",
+    "Billete de 50 pesos argentinos. Color azul predominante. Muestra a Domingo F. Sarmiento, Islas Malvinas o Cóndor Andino.",
+    "Billete de 100 pesos argentinos. Color violeta predominante. Muestra a Julio A. Roca, Eva Perón o la Taruca.",
+    "Billete de 200 pesos argentinos. Color celeste predominante. Muestra la Ballena Franca Austral o a Martín Miguel de Güemes y Juana Azurduy.",
+    "Billete de 500 pesos argentinos. Color verde predominante. Muestra el Yaguareté o a María Remedios del Valle y Manuel Belgrano.",
+    "Billete de 1000 pesos argentinos. Color naranja predominante. Muestra el Hornero o a José de San Martín.",
+    "Billete de 2000 pesos argentinos. Color gris oscuro y rosado. Muestra a la Dra. Cecilia Grierson, Dr. Ramón Carrillo y el Instituto Malbrán.",
+    "Billete de 10000 pesos argentinos. Color celeste predominante. Muestra a Manuel Belgrano, María Remedios del Valle y la Jura de la Bandera.",
+    "Billete de 20000 pesos argentinos. Color azul y rojo. Muestra a Juan Bautista Alberdi.",
+    "Billetes fuera de curso legal en Argentina: billetes anteriores a la serie actual, dólares, euros, moneda extranjera, billetes de juego Monopoly. Las tarjetas de crédito o débito no son billetes argentinos.",
+
+    # Tipos de facturas en Argentina
+    "Factura A en Argentina: Emitida por un Responsable Inscripto a otro. Discrimina el IVA en detalle. Montos en pesos argentinos.",
+    "Factura B en Argentina: Emitida por un Responsable Inscripto a Consumidor Final, Monotributista o Exento. El IVA está incluido pero no discriminado. Montos en pesos argentinos.",
+    "Factura C en Argentina: Emitida por Monotributistas o sujetos exentos. No incluye IVA. Montos en pesos argentinos.",
+    "Factura E en Argentina: Factura de Exportación de bienes o servicios. Puede estar en pesos argentinos o moneda extranjera.",
+    "Factura M en Argentina: Emitida por Responsables Inscriptos con inconsistencias. Discrimina IVA e incluye retenciones en pesos argentinos.",
 
     # Información general de facturas argentinas
-    "Los datos más importantes de una factura argentina son: razón social empresa emisora, importe total a pagar, fecha de vencimiento primer vencimiento y segundo vencimiento si aplica. El CUIT es el identificador tributario de la empresa.",
-    "Una factura puede tener múltiples vencimientos. El primer vencimiento tiene menor importe. El segundo vencimiento tiene recargo por mora o interés punitorio. Si la fecha actual superó el primer vencimiento, se debe pagar el importe del segundo vencimiento.",
-    "Los códigos de barras y QR en facturas argentinas permiten el pago electrónico. La información clave está impresa en texto: nombre empresa, importe, fecha vencimiento.",
+    "Los datos más importantes de una factura argentina son: razón social empresa emisora, importe total a pagar en pesos argentinos, fecha de vencimiento primer vencimiento y segundo vencimiento si aplica. El CUIT es el identificador tributario de la empresa en Argentina.",
+    "Una factura en Argentina puede tener múltiples vencimientos. El primer vencimiento tiene menor importe. El segundo vencimiento tiene recargo por mora o interés punitorio en pesos argentinos. Si la fecha actual superó el primer vencimiento, se debe pagar el importe del segundo vencimiento.",
+    "Los códigos de barras y QR en facturas argentinas permiten el pago electrónico en pesos argentinos. La información clave está impresa en texto: nombre de la empresa, importe a pagar en pesos argentinos, fecha de vencimiento.",
+
+    # Métodos de Pago y Billeteras Virtuales en Argentina
+    "El CBU (Clave Bancaria Uniforme) tiene 22 dígitos y se usa para cuentas bancarias tradicionales en Argentina. El CVU (Clave Virtual Uniforme) también tiene 22 dígitos pero se usa para billeteras virtuales no bancarias. Ambos pueden tener un Alias de texto.",
+    "Billeteras virtuales y pagos QR en Argentina: Aplicaciones como Mercado Pago, MODO, Ualá y Personal Pay permiten pagos a través de Códigos QR interoperables bajo el sistema de Transferencias 3.0. Los montos se debitan en pesos argentinos.",
+    "Tarjetas en Argentina: Las tarjetas de débito extraen fondos inmediatos de la cuenta, mientras que las de crédito permiten pagar a mes vencido o en cuotas financiadas en pesos argentinos (ej. programas Cuota Simple o Ahora 12).",
+
+    # Notas de Crédito, Débito y Recibos en Argentina
+    "Nota de Crédito en Argentina: Es un documento legal que anula o revierte total o parcialmente una factura emitida previamente, por ejemplo, debido a una devolución, descuento o error de facturación. Los montos se restan.",
+    "Nota de Débito en Argentina: Es un comprobante que las empresas emiten para cobrar un recargo a una factura ya emitida. Se usa frecuentemente para cobrar intereses por pagos fuera de término o gastos bancarios. Los montos se suman.",
+    "Remitos y Recibos en Argentina: El Remito comercial no tiene validez fiscal como factura, solo respalda el traslado y entrega física de mercadería. El Recibo (ej. Recibo X o C) es el comprobante oficial de que se ha recibido un pago en dinero.",
+
+    # Impuestos y Retenciones (Nivel Básico)
+    "El IVA (Impuesto al Valor Agregado) en Argentina tiene tres alícuotas principales: 21% (tasa general), 10,5% (bienes de capital, algunos alimentos, computación) y 27% (servicios públicos como luz, gas y telecomunicaciones).",
+    "Ingresos Brutos (IIBB) y Percepciones: En Argentina, los impuestos provinciales como IIBB (ej. ARBA en Buenos Aires o API en Santa Fe) pueden generar cargos extra llamados 'Percepciones' que se suman al total a pagar en la factura.",
+
+    # Tipos de Cambio y Dólar
+    "Facturas en moneda extranjera en Argentina: Las facturas de exportación (Tipo E) o servicios de software del exterior suelen estar denominadas en dólares. Al pagarse localmente, a menudo se convierten a pesos argentinos usando la cotización del Dólar Oficial del Banco Nación, pudiendo sumar percepciones e Impuesto PAIS si corresponde.",
+
+    # Servicios Públicos y Avisos de Corte
+    "Aviso de Suspensión o Corte de Servicio en Argentina: Las empresas de servicios públicos (ej. EPE, ASSA, Litoral Gas) imprimen leyendas de advertencia de corte si se registran deudas previas o facturas impagas. Generalmente se indica una fecha límite antes de proceder con el corte del suministro.",
 ]
 
 _TOKENIZED = [doc.lower().split() for doc in _DOCUMENTS]
