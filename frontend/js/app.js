@@ -92,6 +92,7 @@ async function speak(text) {
       const utt = new SpeechSynthesisUtterance(text);
       utt.lang = 'es-AR';
       utt.rate = 1.3;
+      utt.pitch = 0.85;
       const voices = speechSynthesis.getVoices();
       const esVoice = voices.find(v => v.lang.startsWith('es'));
       if (esVoice) utt.voice = esVoice;
@@ -119,7 +120,7 @@ async function speak(text) {
     await new Promise((resolve) => {
       _audioSource = ctx.createBufferSource();
       _audioSource.buffer = audioBuffer;
-      _audioSource.playbackRate.value = 1.35;
+      _audioSource.playbackRate.value = 1.15;
       _audioSource.connect(ctx.destination);
       _audioSource.onended = () => { _audioSource = null; resolve(); };
       _audioSource.start(0);

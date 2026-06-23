@@ -13,7 +13,7 @@ Agente inteligente que asiste a personas con discapacidad visual en la gestión 
 - LLM: Llama 3.3 y Llama 4 Scout (multimodal) — Groq
 - Orquestador: LangGraph (grafo de estados)
 - Backend: FastAPI (Python 3.10+)
-- RAG: BM25 sobre base de conocimiento de proveedores argentinos
+- RAG: ChromaDB + sentence-transformers (embeddings vectoriales) sobre documentos de proveedores y billetes argentinos
 - Frontend: Vanilla JS / HTML / CSS — mobile-first con Web Speech API
 
 ---
@@ -73,7 +73,7 @@ Usuario (voz/texto/imagen)
    [FastAPI Backend]
         ↓
    [LangGraph Graph]
-    ├── rag_node        → Recupera contexto (BM25 sobre proveedores AR)
+    ├── rag_node        → Recupera contexto (ChromaDB vectorial sobre proveedores AR)
     ├── agent_node      → LLM (Llama) decide qué tool invocar
     ├── extract_invoice → Tool: extraer_datos_factura (Llama Vision multimodal)
     ├── identify_bills  → Tool: identificar_billetes (Llama Vision multimodal)
@@ -100,6 +100,35 @@ Usuario (voz/texto/imagen)
 | `/api/reset` | POST | Reiniciar transacción actual |
 | `/api/logs/{session_id}` | GET | Logs de observabilidad de la sesión |
 | `/api/health` | GET | Estado del servicio |
+
+---
+
+## RAG — Gestión de la base de conocimiento
+
+La base de conocimiento vectorial persiste en `backend/rag/chroma_db/` y tiene dos tipos de documentos:
+
+- **Seeds:** textos generales hardcodeados en `backend/rag/knowledge_base.py` (proveedores argentinos, billetes, info de facturas).
+- **Documentos propios:** archivos indexados manualmente desde la carpeta `documentos/` (facturas reales, fotos de billetes, etc.).
+
+### Agregar nuevos documentos
+
+Copiá los archivos a la carpeta `documentos/` (soporta `.txt`, `.jpg`, `.jpeg`, `.png`, `.webp`, `.pdf`) y ejecutá el indexer:
+
+```bash
+python -m backend.rag.indexer documentos/
+```
+
+Los archivos ya indexados se saltean automáticamente. Podés agregar documentos en cualquier momento sin reiniciar el servidor.
+
+### Modificar los seeds
+
+Editá los textos en `_SEED_DOCUMENTS` dentro de `backend/rag/knowledge_base.py` y luego ejecutá:
+
+```bash
+python -m backend.rag.reseed
+```
+
+Esto elimina los seeds viejos de la colección y carga los nuevos. No afecta los documentos propios indexados.
 
 ---
 

@@ -131,32 +131,36 @@ def format_bills_summary(bills) -> str:
 
 
 def format_payment_result(result, invoice) -> str:
+    entity_ref = f"la factura de {invoice.entity}" if invoice.entity else "la factura"
+
     if not result.sufficient:
+        have_desc = ", ".join(
+            f"el de {_fmt_ars(b.denomination)} pesos a la {b.position}"
+            for b in result.bills_to_keep
+        )
+        have_part = f" Tenés {have_desc}." if have_desc else ""
         return (
-            f"El total de la factura es de {_fmt_ars(result.total_required)} pesos, "
-            f"pero solo detecté {_fmt_ars(result.total_available)} pesos sobre la mesa. "
-            f"Te faltan {_fmt_ars(result.missing_amount)} pesos para completar el pago. "
-            f"Por favor, agregá más billetes a la superficie y tomá una nueva fotografía."
+            f"Para pagar {entity_ref} te faltan {_fmt_ars(result.missing_amount)} pesos.{have_part} "
+            f"Agregá más billetes sobre la superficie y tomá una nueva foto."
         )
 
     bills_desc = ", ".join(
-        f"el billete de {_fmt_ars(b.denomination)} pesos que está a la {b.position}"
+        f"el de {_fmt_ars(b.denomination)} pesos a la {b.position}"
         for b in result.bills_to_use
     )
     keep_desc = ""
     if result.bills_to_keep:
         keep_desc = " Guardá " + ", ".join(
-            f"el billete de {_fmt_ars(b.denomination)} pesos" for b in result.bills_to_keep
+            f"el de {_fmt_ars(b.denomination)} pesos a la {b.position}" for b in result.bills_to_keep
         ) + "."
 
     if result.change == 0:
         return (
-            f"El dinero es exacto. "
-            f"Entregá {bills_desc}.{keep_desc} "
-            f"No deberías recibir vuelto."
+            f"Para pagar {entity_ref} el monto es exacto. "
+            f"Entregá {bills_desc}.{keep_desc}"
         )
     else:
         return (
-            f"Para pagar, entregá {bills_desc}.{keep_desc} "
+            f"Para pagar {entity_ref}, entregá {bills_desc}.{keep_desc} "
             f"Tu vuelto debe ser de {_fmt_ars(result.change)} pesos."
         )

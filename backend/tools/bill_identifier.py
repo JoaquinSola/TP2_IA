@@ -36,7 +36,7 @@ INSTRUCCIONES CRÍTICAS:
 1. PRIMERO leé el NÚMERO impreso en el billete (ángulo, color y tamaño del número son pistas secundarias).
 2. El número impreso en el billete ES la denominación. Confiá en el número, no en el color.
 3. Identificá CADA billete visible, incluyendo los parcialmente tapados.
-4. Indicá la posición espacial: "izquierda", "centro", "derecha", "arriba", "abajo", "arriba-izquierda", "arriba-derecha", "abajo-izquierda", "abajo-derecha".
+4. POSICIÓN ESPACIAL: describí la posición tal como el usuario ve los billetes sobre la mesa mirando hacia abajo. La imagen ya está orientada correctamente. Usá: "izquierda", "centro", "derecha", "arriba", "abajo", "arriba-izquierda", "arriba-derecha", "abajo-izquierda", "abajo-derecha". El eje horizontal (izquierda/derecha) es el lado largo de la mesa; el eje vertical (arriba/abajo) es el lado corto.
 5. Marcá valid=false SOLO si el billete es CLARAMENTE una moneda extranjera (dólar, euro, real) o un billete de juego (Monopoly, fichas, etc.) o claramente falso.
 6. Billetes argentinos de CUALQUIER denominación → valid=true (incluyendo los viejos de $100, $200, $500).
 7. Si no hay billetes en la imagen, retorná lista vacía.
@@ -61,11 +61,14 @@ NO inventes billetes. Solo incluí los que ves con claridad."""
 
 
 def _prepare_image(image_bytes: bytes, mime_type: str) -> tuple[bytes, str]:
-    """Redimensiona la imagen si supera 3MB para no exceder límites de la API."""
-    if len(image_bytes) <= 3 * 1024 * 1024:
-        return image_bytes, mime_type
+    """
+    Corrige orientación EXIF (fotos de celular en retrato) y redimensiona si supera 3MB.
+    Sin esto, el LLM recibe la imagen rotada 90° y confunde izquierda/derecha con arriba/abajo.
+    """
     try:
+        from PIL import ImageOps
         img = Image.open(io.BytesIO(image_bytes))
+        img = ImageOps.exif_transpose(img)  # aplica la rotación EXIF a los píxeles
         if img.mode in ('RGBA', 'P', 'LA'):
             img = img.convert('RGB')
         max_dim = 1920

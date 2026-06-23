@@ -56,6 +56,11 @@ def agent_node(state: AgentState) -> dict:
     if state.get("bills_image_bytes"):
         return {"next_action": "identificar_billetes", "step": "decidiendo"}
 
+    # Cortocircuito: si ya tenemos factura + billetes y el pago aún no fue calculado,
+    # calcular directamente sin pasar por el LLM (evita que el LLM pida foto de nuevo).
+    if state.get("invoice_data") and state.get("bills_data") and not state.get("payment_result"):
+        return {"next_action": "calcular_cambio_y_pago", "step": "decidiendo"}
+
     session_id = state["session_id"]
     messages = state["messages"]
     last_msg = messages[-1].content if messages else ""
@@ -160,6 +165,14 @@ def extract_invoice_node(state: AgentState) -> dict:
                 f"¿Con qué monto querés continuar?"
             )
 
+        # Si ya hay billetes escaneados, ir directo al cálculo sin pedir foto de nuevo
+        if invoice.is_valid_document and invoice.total_amount and state.get("bills_data"):
+            return {
+                "invoice_data": invoice.model_dump(),
+                "next_action": "calcular_cambio_y_pago",
+                "step": "factura_extraida",
+            }
+
         if invoice.is_valid_document and invoice.total_amount:
             response_msg += " Cuando tengas los billetes listos, sacá una foto de ellos sobre la mesa."
 
@@ -242,11 +255,7 @@ def calculate_node(state: AgentState) -> dict:
         bills = [Bill(**b) for b in bills_list]
 
         result = calcular_cambio_y_pago(session_id=session_id, invoice=invoice, bills=bills)
-        payment_msg = format_payment_result(result, invoice)
-        invoice_summary = format_invoice_summary(invoice)
-        bills_summary = format_bills_summary(bills)
-
-        full_response = f"{invoice_summary}. {bills_summary} {payment_msg}"
+        full_response = format_payment_result(result, invoice)
 
         return {
             "payment_result": result.model_dump(),
@@ -328,7 +337,11 @@ def build_graph():
         },
     )
 
-    workflow.add_edge("extract_invoice", "respond")
+    workflow.add_conditional_edges(
+        "extract_invoice",
+        route_after_bills,
+        {"calculate": "calculate", "respond": "respond"},
+    )
     workflow.add_conditional_edges(
         "identify_bills",
         route_after_bills,
