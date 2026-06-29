@@ -50,6 +50,7 @@ class ChatRequest(BaseModel):
     image_base64: Optional[str] = None
     image_mime: Optional[str] = None  # "image/jpeg", "image/png", "application/pdf"
     image_purpose: Optional[str] = None  # "invoice", "bills"
+    add_bills: bool = False  # True: sumar billetes nuevos a los existentes y recalcular
 
 
 class ChatResponse(BaseModel):

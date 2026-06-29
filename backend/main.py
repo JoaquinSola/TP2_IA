@@ -41,6 +41,22 @@ if _FRONTEND.exists():
     app.mount("/static", StaticFiles(directory=str(_FRONTEND)), name="static")
 
 
+@app.on_event("startup")
+async def _warmup():
+    """
+    Pre-carga el modelo de embeddings (sentence-transformers) en RAM al arrancar.
+    Sin esto, la primera request de imagen tarda varios segundos mientras
+    sentence-transformers carga los ~199 tensores del modelo desde disco.
+    """
+    def _load():
+        from backend.rag.knowledge_base import retrieve_context
+        retrieve_context("warmup factura billete")
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _load)
+    print("[startup] Modelo de embeddings RAG cargado en memoria.")
+
+
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
 @app.get("/")
@@ -108,30 +124,37 @@ async def chat(request: ChatRequest):
         log_error(session.session_id, "graph_invoke", str(e))
         raise HTTPException(status_code=500, detail="El asistente tuvo un problema. Por favor intentá de nuevo.")
 
+    from backend.models.schemas import InvoiceData, PaymentResult, Bill
+    from backend.agent.prompts import format_payment_result
+
     # Actualizar estado de la sesión con los resultados
     if result.get("invoice_data"):
         session.invoice_data = result["invoice_data"]
+
     if result.get("bills_data") is not None:
-        session.bills_data = result["bills_data"]
-    if result.get("payment_result"):
-        session.payment_result = result["payment_result"]
+        if request.add_bills and session.bills_data:
+            # Acumular: billetes nuevos se suman a los ya escaneados anteriormente
+            session.bills_data = session.bills_data + result["bills_data"]
+        else:
+            session.bills_data = result["bills_data"]
 
     # Limpiar imágenes de la sesión (ya procesadas)
     session.current_invoice_bytes = None
     session.current_bills_bytes = None
 
-    # Guardar historial conversacional
-    session.conversation_history.append({"role": "user", "content": user_text})
+    # Si se agregaron billetes: recalcular con el total acumulado (determinístico, sin LLM)
     final_response = result.get("final_response") or "¿En qué más puedo ayudarte?"
-    session.conversation_history.append({"role": "assistant", "content": final_response})
-
-    from backend.models.schemas import InvoiceData, PaymentResult, Bill
-    invoice_data_out = None
-    if result.get("invoice_data"):
-        invoice_data_out = InvoiceData(**result["invoice_data"])
-
     payment_result_out = None
-    if result.get("payment_result"):
+
+    if request.add_bills and session.bills_data and session.invoice_data:
+        from backend.tools.payment_calculator import calcular_cambio_y_pago
+        _invoice = InvoiceData(**session.invoice_data)
+        _bills = [Bill(**b) for b in session.bills_data]
+        _recalc = calcular_cambio_y_pago(session.session_id, _invoice, _bills)
+        session.payment_result = _recalc.model_dump()
+        final_response = format_payment_result(_recalc, _invoice)
+        payment_result_out = _recalc
+    elif result.get("payment_result"):
         pr = result["payment_result"]
         payment_result_out = PaymentResult(
             total_available=pr["total_available"],
@@ -142,6 +165,15 @@ async def chat(request: ChatRequest):
             bills_to_keep=[Bill(**b) for b in pr.get("bills_to_keep", [])],
             missing_amount=pr.get("missing_amount", 0.0),
         )
+        session.payment_result = result["payment_result"]
+
+    # Guardar historial conversacional
+    session.conversation_history.append({"role": "user", "content": user_text})
+    session.conversation_history.append({"role": "assistant", "content": final_response})
+
+    invoice_data_out = None
+    if result.get("invoice_data"):
+        invoice_data_out = InvoiceData(**result["invoice_data"])
 
     return ChatResponse(
         response=final_response,

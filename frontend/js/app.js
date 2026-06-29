@@ -5,9 +5,12 @@ const state = {
   isListening: false,
   recognition: null,
   cameraStream: null,
+  addBillsMode: false,          // true: próxima foto de billetes se suma a las anteriores
+  lastPaymentInsufficient: false, // true: el último cálculo indicó que falta dinero
 };
 
 let conversationMode = false;
+let isSpeaking = false; // true mientras el bot reproduce audio — bloquea el mic
 
 const API_BASE = window.location.origin;
 
@@ -36,8 +39,6 @@ const previewLabel            = document.getElementById('preview-label');
 const btnClearImage           = document.getElementById('btn-clear-image');
 const paymentPanel            = document.getElementById('payment-panel');
 const paymentDetails          = document.getElementById('payment-details');
-const btnLoadLogs             = document.getElementById('btn-load-logs');
-const obsLogs                 = document.getElementById('obs-logs');
 const cameraModal             = document.getElementById('camera-modal');
 const cameraVideo             = document.getElementById('camera-video');
 const cameraCanvas            = document.getElementById('camera-canvas');
@@ -82,8 +83,55 @@ document.addEventListener('click', function _unlockAudio() {
   } catch (_) {}
 }, true);
 
+/* ─── Audio de procesamiento (pipeline separado del TTS principal) ──────────
+   speak() usa _audioSource como estado global. Si "Procesando..." comparte ese
+   estado, puede sobreescribir la respuesta real si su fetch llega después.
+   Solución: estado completamente independiente + AbortController en el fetch. */
+let _processingCtrl = null;
+let _processingSource = null;
+
+function stopProcessingAudio() {
+  if (_processingCtrl) { _processingCtrl.abort(); _processingCtrl = null; }
+  if (_processingSource) { try { _processingSource.stop(); } catch (_) {} _processingSource = null; }
+}
+
+async function speakProcessing() {
+  stopProcessingAudio();
+  if (!isMobile() && window.speechSynthesis) {
+    const utt = new SpeechSynthesisUtterance('Procesando...');
+    utt.lang = 'es-AR';
+    utt.rate = 1.3;
+    speechSynthesis.speak(utt); // será cancelado por speechSynthesis.cancel() en speak()
+    return;
+  }
+  _processingCtrl = new AbortController();
+  try {
+    const res = await fetch(`${API_BASE}/api/tts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'Procesando...' }),
+      signal: _processingCtrl.signal,
+    });
+    if (!res.ok) return;
+    const ab = await res.arrayBuffer();
+    const ctx = _getAudioContext();
+    if (ctx.state === 'suspended') await ctx.resume();
+    const buf = await ctx.decodeAudioData(ab);
+    _processingSource = ctx.createBufferSource();
+    _processingSource.buffer = buf;
+    _processingSource.connect(ctx.destination);
+    _processingSource.onended = () => { _processingSource = null; };
+    _processingSource.start(0);
+  } catch (err) {
+    if (err.name !== 'AbortError') console.warn('Processing TTS error:', err);
+  }
+}
+
 async function speak(text) {
   if (!text) return;
+  isSpeaking = true;
+  stopListening();       // Cerrar mic antes de hablar
+  stopProcessingAudio(); // Cancelar "Procesando..." si todavía corre
 
   // Desktop sin touch: Web Speech API (funciona síncronamente, sin bloqueo async)
   if (!isMobile() && window.speechSynthesis) {
@@ -96,8 +144,8 @@ async function speak(text) {
       const voices = speechSynthesis.getVoices();
       const esVoice = voices.find(v => v.lang.startsWith('es'));
       if (esVoice) utt.voice = esVoice;
-      utt.onend = resolve;
-      utt.onerror = resolve;
+      utt.onend = () => { isSpeaking = false; resolve(); };
+      utt.onerror = () => { isSpeaking = false; resolve(); };
       speechSynthesis.speak(utt);
     });
     return;
@@ -111,7 +159,7 @@ async function speak(text) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: text.substring(0, 800) }),
     });
-    if (!res.ok) return;
+    if (!res.ok) { isSpeaking = false; return; }
     const arrayBuffer = await res.arrayBuffer();
     const ctx = _getAudioContext();
     if (ctx.state === 'suspended') await ctx.resume();
@@ -122,11 +170,12 @@ async function speak(text) {
       _audioSource.buffer = audioBuffer;
       _audioSource.playbackRate.value = 1.15;
       _audioSource.connect(ctx.destination);
-      _audioSource.onended = () => { _audioSource = null; resolve(); };
+      _audioSource.onended = () => { _audioSource = null; isSpeaking = false; resolve(); };
       _audioSource.start(0);
     });
   } catch (err) {
     console.warn('TTS error:', err);
+    isSpeaking = false;
   }
 }
 
@@ -138,11 +187,61 @@ async function speak(text) {
 
 // Palabras clave para disparar la cámara por voz (Soporta Regex para máxima compatibilidad)
 const INVOICE_CAMERA_WORDS = [
-  /(foto|fotografiar|sacar|leer|ver|escanear|analizar|quiero).*(factura|boleta|recibo)/i,
+  /(foto|fotografiar|sacar|leer|ver|escanear|analizar|quiero|pasar|subir|cargar|mostrar|poner|acercar|presentar|escanear|capturar|tomar).*(factura|boleta|recibo|cuenta)/i,
+  /(factura|boleta|recibo|cuenta).*(foto|imagen|sacar|pasar|subir|cargar|mostrar|leer|escanear)/i,
+  /^(factura|boleta|recibo)$/i,
+  /pasar\s+(la\s+)?(factura|boleta|recibo|cuenta)/i,
 ];
 const BILLS_CAMERA_WORDS = [
-  /(foto|fotografiar|sacar|leer|ver|quiero).*(billete|plata|dinero|efectivo)/i,
+  /(foto|fotografiar|sacar|leer|ver|escanear|analizar|quiero|pasar|subir|cargar|mostrar|poner|acercar|capturar|tomar).*(billete|plata|dinero|efectivo|guita)/i,
+  /(billete|plata|dinero|efectivo|guita).*(foto|imagen|sacar|pasar|subir|cargar|mostrar|escanear)/i,
+  /^(billetes?|plata|efectivo)$/i,
+  /pasar\s+(los?\s+)?(billetes?|plata|dinero|efectivo|guita)/i,
 ];
+// Comandos para agregar billetes (solo activos cuando falta dinero)
+const ADD_BILLS_WORDS = [
+  /(tengo|traigo|agrego|agreg[aá]r?|sum[aá]r?).*(m[aá]s\s+)?(billetes?|plata|dinero|efectivo)/i,
+  /(m[aá]s|nuevos?|adicionales?|otros?)\s*(billetes?|plata|dinero|efectivo)/i,
+  /(billetes?|plata|dinero)\s+(m[aá]s|nuevos?|adicionales?|extra)/i,
+  /tengo\s+m[aá]s/i,
+];
+
+// Comandos para reiniciar la transacción (siempre activos)
+const RESET_WORDS = [
+  /reinici[ao]r?/i,
+  /reset[ea]r?/i,
+  /empez[ao]r\s+(de\s+)?nuevo/i,
+  /comenzar\s+(de\s+)?nuevo/i,
+  /desde\s+cero/i,
+  /de\s+cero/i,
+  /(otra|nueva)\s+(factura|boleta|transacci[oó]n|operaci[oó]n|cuenta)/i,
+  /(te\s+)?voy\s+a\s+pasar\s+(otra|nueva)/i,
+  /limpiar\s+(todo|sistema|datos)/i,
+  /borrar\s+(todo|datos)/i,
+  /nueva\s+transacci[oó]n/i,
+  /nuevo\s+pago/i,
+];
+
+async function handleAddBillsCommand(transcript) {
+  if (transcript) addMessage('user', transcript);
+  state.addBillsMode = true;
+  await speak('Bien, poné los billetes adicionales sobre la superficie y tomá una foto.');
+  showVoiceCameraOverlay('bills', 'billetes adicionales');
+}
+
+async function handleResetCommand(transcript) {
+  if (transcript) addMessage('user', transcript);
+  state.addBillsMode = false;
+  state.lastPaymentInsufficient = false;
+  if (state.sessionId) {
+    try { await fetch(`${API_BASE}/api/reset?session_id=${state.sessionId}`, { method: 'POST' }); } catch (_) {}
+  }
+  paymentPanel.classList.add('hidden');
+  const msg = 'Listo, empezamos de nuevo. ¿Qué factura o ticket querés pagar?';
+  addMessage('assistant', msg);
+  await speak(msg);
+  if (conversationMode) triggerListenWithCue();
+}
 
 function matchVoiceCmd(text, keywords) {
   return keywords.some(kw => {
@@ -162,6 +261,21 @@ function initSpeechRecognition() {
     const transcript = e.results[0][0].transcript;
     const lower = transcript.toLowerCase();
     stopListening();
+
+    // Descartar si el bot todavía está hablando (captura accidental de audio ambiente o eco TTS)
+    if (isSpeaking) return;
+
+    // Comando "agregar billetes" (solo cuando el último cálculo indicó fondos insuficientes)
+    if (state.lastPaymentInsufficient && matchVoiceCmd(lower, ADD_BILLS_WORDS)) {
+      handleAddBillsCommand(transcript);
+      return;
+    }
+
+    // Comando de reinicio de transacción (siempre activo)
+    if (matchVoiceCmd(lower, RESET_WORDS)) {
+      handleResetCommand(transcript);
+      return;
+    }
 
     // Comandos de cámara por voz
     // El browser bloquea file input .click() desde SpeechRecognition (no es gesto de usuario).
@@ -185,6 +299,7 @@ function initSpeechRecognition() {
 }
 
 function startListening() {
+  if (isSpeaking) return; // Nunca abrir el mic mientras el bot habla
   if (!state.recognition) state.recognition = initSpeechRecognition();
 
   if (!state.recognition) {
@@ -229,6 +344,7 @@ function activateKeyboardDictation() {
 }
 
 btnMic.addEventListener('click', () => {
+  if (isSpeaking) return; // Ignorar si el bot está hablando
   if (state.isListening) { stopListening(); return; }
   startListening();
 });
@@ -256,7 +372,9 @@ async function toggleConversationMode() {
 async function triggerListenWithCue() {
   if (!conversationMode) return;
   await speak('Habla ahora.');
-  if (conversationMode) startListening();
+  // Pausa para que el mic no capture el eco del audio TTS
+  await new Promise(r => setTimeout(r, 600));
+  if (conversationMode && !isSpeaking) startListening();
 }
 
 btnConversation.addEventListener('click', toggleConversationMode);
@@ -407,11 +525,26 @@ async function sendMessage() {
   const hasImage = !!state.pendingImage;
   if (!text && !hasImage) return;
 
+  // Comando "agregar billetes" escrito/dictado (solo cuando falta dinero)
+  if (!hasImage && state.lastPaymentInsufficient && matchVoiceCmd(text.toLowerCase(), ADD_BILLS_WORDS)) {
+    textInput.value = '';
+    handleAddBillsCommand(text);
+    return;
+  }
+
+  // Comando de reinicio escrito/dictado (siempre activo)
+  if (!hasImage && matchVoiceCmd(text.toLowerCase(), RESET_WORDS)) {
+    textInput.value = '';
+    handleResetCommand(text);
+    return;
+  }
+
   const displayText = text || (state.pendingImage?.purpose === 'bills' ? 'Foto de billetes enviada' : 'Imagen de factura enviada');
   addMessage('user', displayText, hasImage ? imagePreview.src : null);
   textInput.value = '';
   textInput.style.height = 'auto';
   setLoading(true);
+  if (hasImage || conversationMode) speakProcessing(); // pipeline separado — no interfiere con la respuesta
 
   const imgData = state.pendingImage;
   state.pendingImage = null;
@@ -431,6 +564,7 @@ async function sendMessage() {
         image_base64: imgData ? imgData.base64 : null,
         image_mime: imgData ? imgData.mime : null,
         image_purpose: imgData ? imgData.purpose : null,
+        add_bills: state.addBillsMode && imgData?.purpose === 'bills',
       }),
     });
     if (!res.ok) {
@@ -441,6 +575,8 @@ async function sendMessage() {
     state.sessionId = data.session_id;
     responseText = data.response;
     paymentResult = data.payment_result;
+    if (paymentResult) state.lastPaymentInsufficient = !paymentResult.sufficient;
+    state.addBillsMode = false;
     addMessage('assistant', data.response);
   } catch (err) {
     const rawMsg = err.message || '';
@@ -494,6 +630,8 @@ btnReset.addEventListener('click', async () => {
     btnConversation.setAttribute('aria-pressed', 'false');
     stopListening();
   }
+  state.addBillsMode = false;
+  state.lastPaymentInsufficient = false;
   if (state.sessionId) {
     try { await fetch(`${API_BASE}/api/reset?session_id=${state.sessionId}`, { method: 'POST' }); } catch (_) {}
   }
@@ -512,16 +650,6 @@ textInput.addEventListener('input', () => {
   textInput.style.height = Math.min(textInput.scrollHeight, 120) + 'px';
 });
 btnSend.addEventListener('click', sendMessage);
-
-/* ─── Observabilidad ─────────────────────────────────────────────────────── */
-btnLoadLogs.addEventListener('click', async () => {
-  if (!state.sessionId) { obsLogs.textContent = 'Aún no hay sesión activa.'; return; }
-  try {
-    const res = await fetch(`${API_BASE}/api/logs/${state.sessionId}`);
-    const data = await res.json();
-    obsLogs.textContent = JSON.stringify(data.logs, null, 2);
-  } catch (err) { obsLogs.textContent = `Error: ${err.message}`; }
-});
 
 /* ─── Escape cierra modal ─────────────────────────────────────────────────── */
 document.addEventListener('keydown', (e) => {

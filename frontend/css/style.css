@@ -465,54 +465,6 @@ html, body {
   font-weight: 600;
 }
 
-/* ── Observabilidad ───────────────────────────────────────── */
-.obs-panel {
-  margin: 1rem;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--surface2);
-  overflow: hidden;
-}
-
-.obs-panel summary {
-  padding: 0.75rem 1rem;
-  cursor: pointer;
-  background: var(--surface);
-  font-size: 0.85rem;
-  color: var(--text-muted);
-  user-select: none;
-}
-
-.obs-panel summary:hover { color: var(--text); }
-
-.obs-content {
-  padding: 0.75rem;
-  background: var(--bg);
-}
-
-.load-logs-btn {
-  background: var(--surface2);
-  color: var(--primary-light);
-  border: 1px solid var(--primary);
-  border-radius: var(--radius-sm);
-  padding: 0.5rem 1rem;
-  cursor: pointer;
-  font-size: 0.85rem;
-  margin-bottom: 0.75rem;
-}
-
-.obs-logs {
-  font-family: 'Courier New', monospace;
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 300px;
-  overflow-y: auto;
-  background: var(--surface);
-  padding: 0.75rem;
-  border-radius: var(--radius-sm);
-}
-
 /* ── Overlay de cámara por voz ────────────────────────────── */
 .voice-cam-overlay {
   position: fixed;

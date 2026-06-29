@@ -85,6 +85,7 @@ def agent_node(state: AgentState) -> dict:
     prompt = AGENT_DECISION_PROMPT.format(
         has_invoice="Sí" if state.get("invoice_data") else "No",
         has_bills="Sí" if state.get("bills_data") else "No",
+        has_payment="Sí" if state.get("payment_result") else "No",
         awaiting=state.get("step", "ninguno"),
         has_invoice_image="Sí" if state.get("invoice_image_bytes") else "No",
         has_bills_image="Sí" if state.get("bills_image_bytes") else "No",
