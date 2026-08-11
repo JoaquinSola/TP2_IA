@@ -1,3 +1,0 @@
-ngrok http --domain=TU-DOMINIO.ngrok-free.app 8000
-
-ngrok http --domain=showroom-dinner-specimen.ngrok-free.dev 8000

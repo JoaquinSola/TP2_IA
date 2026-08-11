@@ -23,3 +23,6 @@ echo Presiona Ctrl+C para detener.
 echo.
 
 venv\Scripts\python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+echo.
+echo El servidor se detuvo. Revisa el error de arriba.
+pause

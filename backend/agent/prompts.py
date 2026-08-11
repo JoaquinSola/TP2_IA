@@ -86,6 +86,7 @@ RECORDATORIOS AL RESPONDER (regla 4):
 - ABSOLUTAMENTE PROHIBIDO el símbolo $. Nunca. Ni una vez. Escribí "9.479 pesos", JAMÁS "$9.479".
 - ABSOLUTAMENTE PROHIBIDO decir "dólares" o cualquier moneda que no sea "pesos".
 - NUNCA menciones herramientas ni funciones internas.
+- Si invoice_summary contiene "EMPRESA NO IDENTIFICADA", respondé: "No pude identificar la empresa del comprobante." JAMÁS inventes ni deduzcas un nombre de empresa desde el RAG u otro contexto.
 - Si la pregunta no es sobre facturas o billetes, redirigí al tema en una frase.
 - Máximo 2 frases. El usuario escucha por voz."""
 
@@ -106,6 +107,8 @@ def format_invoice_summary(invoice) -> str:
     parts = []
     if invoice.entity:
         parts.append(f"Factura de {invoice.entity}")
+    else:
+        parts.append("Factura de EMPRESA NO IDENTIFICADA")
     if invoice.total_amount:
         parts.append(f"por {_fmt_ars(invoice.total_amount)} pesos")
     if invoice.due_date:
@@ -115,46 +118,74 @@ def format_invoice_summary(invoice) -> str:
     return " ".join(parts) if parts else "Factura detectada"
 
 
+_ORDINAL_ORDER = ("primero", "segundo", "tercero", "cuarto", "quinto", "sexto", "séptimo")
+
 def format_bills_summary(bills) -> str:
     if not bills:
         return "No se detectaron billetes de pesos argentinos"
     valid = [b for b in bills if b.valid]
     invalid = [b for b in bills if not b.valid]
     total = sum(b.denomination for b in valid)
-    descriptions = [
-        f"un billete de {_fmt_ars(b.denomination)} pesos a la {b.position}"
-        for b in valid
-    ]
-    summary = ", ".join(descriptions)
-    result = f"Detecté {len(valid)} billete{'s' if len(valid) != 1 else ''} de pesos argentinos: {summary}. Total disponible: {_fmt_ars(total)} pesos."
+
+    scenario = valid[0].scenario if valid else "superficie"
+    en_mano = scenario == "mano"
+
+    if len(valid) >= 2:
+        # Para 2+ billetes siempre ordenar de izquierda a derecha
+        _SPATIAL_ORDER = (
+            "arriba-izquierda", "izquierda", "abajo-izquierda",
+            "primero", "segundo", "tercero", "cuarto", "quinto",
+            "arriba", "centro", "abajo",
+            "arriba-derecha", "derecha", "abajo-derecha",
+        )
+        def _spatial_index(b):
+            pos = b.position.lower()
+            try:
+                return _SPATIAL_ORDER.index(pos)
+            except ValueError:
+                return 99
+        ordered = sorted(valid, key=_spatial_index)
+        items = ", ".join(
+            f"{ordinal.capitalize()} {_fmt_ars(b.denomination)} pesos"
+            for ordinal, b in zip(_ORDINAL_ORDER, ordered)
+        )
+        result = f"Veo {len(valid)} billetes, te los indico de izquierda a derecha: {items}. Total: {_fmt_ars(total)} pesos."
+    else:
+        b = valid[0]
+        result = f"Veo un billete de {_fmt_ars(b.denomination)} pesos. Total: {_fmt_ars(total)} pesos."
+
     if invalid:
         result += f" Atención: encontré {len(invalid)} billete{'s' if len(invalid) != 1 else ''} que no corresponde{'n' if len(invalid) != 1 else ''} a pesos argentinos vigentes."
     return result
+
+
+def _bill_ref(b) -> str:
+    """Genera referencia verbal a un billete según su posición."""
+    pos = b.position.lower()
+    if pos in ("primero", "segundo", "tercero", "cuarto", "quinto"):
+        return f"el de {_fmt_ars(b.denomination)} pesos ({pos})"
+    if pos in ("izquierda", "derecha", "arriba", "abajo"):
+        return f"el de {_fmt_ars(b.denomination)} pesos a la {pos}"
+    if pos == "centro":
+        return f"el de {_fmt_ars(b.denomination)} pesos del centro"
+    return f"el de {_fmt_ars(b.denomination)} pesos en {pos.replace('-', ' ')}"
 
 
 def format_payment_result(result, invoice) -> str:
     entity_ref = f"la factura de {invoice.entity}" if invoice.entity else "la factura"
 
     if not result.sufficient:
-        have_desc = ", ".join(
-            f"el de {_fmt_ars(b.denomination)} pesos a la {b.position}"
-            for b in result.bills_to_keep
-        )
+        have_desc = ", ".join(_bill_ref(b) for b in result.bills_to_keep)
         have_part = f" Tenés {have_desc}." if have_desc else ""
         return (
             f"Para pagar {entity_ref} te faltan {_fmt_ars(result.missing_amount)} pesos.{have_part} "
-            f"Agregá más billetes sobre la superficie y tomá una nueva foto."
+            f"Agregá más billetes y tomá una nueva foto."
         )
 
-    bills_desc = ", ".join(
-        f"el de {_fmt_ars(b.denomination)} pesos a la {b.position}"
-        for b in result.bills_to_use
-    )
+    bills_desc = ", ".join(_bill_ref(b) for b in result.bills_to_use)
     keep_desc = ""
     if result.bills_to_keep:
-        keep_desc = " Guardá " + ", ".join(
-            f"el de {_fmt_ars(b.denomination)} pesos a la {b.position}" for b in result.bills_to_keep
-        ) + "."
+        keep_desc = " Guardá " + ", ".join(_bill_ref(b) for b in result.bills_to_keep) + "."
 
     if result.change == 0:
         return (

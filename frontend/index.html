@@ -60,6 +60,12 @@
         </button>
       </div>
 
+      <!-- Facturas digitales: acceso a PDFs en Descargas por voz -->
+      <button id="btn-digital-invoice" class="action-btn digital action-btn-wide" aria-label="Acceder a facturas digitales descargadas en el dispositivo">
+        <span class="icon" aria-hidden="true">📱</span>
+        <span>Facturas Digitales</span>
+      </button>
+
       <!-- Inputs de archivo: galería (sin forzar cámara) -->
       <input type="file" id="input-invoice" accept="image/*,application/pdf" class="hidden-input" aria-hidden="true" />
       <input type="file" id="input-bills" accept="image/*" class="hidden-input" aria-hidden="true" />
@@ -140,6 +146,18 @@
     </div>
   </main>
 
+  <!-- Overlay de facturas digitales: lista PDFs y selección por voz -->
+  <div id="digital-invoice-overlay" class="digital-overlay hidden" role="dialog" aria-modal="true" aria-label="Selección de factura digital por voz">
+    <div class="digital-overlay-content">
+      <div class="digital-overlay-header">
+        <span>📱 Facturas Digitales</span>
+        <button id="btn-close-digital" class="close-btn" aria-label="Cerrar">✕</button>
+      </div>
+      <ul id="digital-pdf-list" class="digital-pdf-list" aria-live="polite" aria-label="Lista de facturas encontradas"></ul>
+      <p id="digital-status" class="digital-status">Buscando facturas...</p>
+    </div>
+  </div>
+
   <!-- Overlay de cámara por voz: el tap aquí SÍ es gesto válido para el file picker -->
   <div id="voice-camera-overlay" class="voice-cam-overlay hidden" role="button" tabindex="0">
     <div class="voice-cam-content">
@@ -157,6 +175,19 @@
       <p class="acc-main-text">Toca en cualquier lugar para comenzar</p>
       <p class="acc-sub-text">Todo se maneja por voz</p>
     </div>
+  </div>
+
+  <!-- Panel de debug visual (solo mobile, se activa con 3 taps en el header) -->
+  <button id="debug-toggle" class="debug-toggle" aria-label="Abrir panel de debug" title="Debug">🐛</button>
+  <div id="debug-panel" class="debug-panel hidden">
+    <div class="debug-panel-header">
+      <span>Debug</span>
+      <div style="display:flex;gap:0.4rem">
+        <button id="debug-clear" class="debug-action-btn">Limpiar</button>
+        <button id="debug-close" class="debug-action-btn">✕</button>
+      </div>
+    </div>
+    <div id="debug-log" class="debug-log"></div>
   </div>
 
   <script src="/static/js/app.js"></script>
