@@ -75,6 +75,9 @@ const previewLabel            = document.getElementById('preview-label');
 const btnClearImage           = document.getElementById('btn-clear-image');
 const paymentPanel            = document.getElementById('payment-panel');
 const paymentDetails          = document.getElementById('payment-details');
+const btnCloseQr              = document.getElementById('btn-close-qr');
+btnCloseQr?.addEventListener('click', _closeQrModal);
+
 const cameraModal             = document.getElementById('camera-modal');
 const cameraVideo             = document.getElementById('camera-video');
 const cameraCanvas            = document.getElementById('camera-canvas');
@@ -398,6 +401,8 @@ const MP_WORDS = [
   /conectar\s+(mi\s+)?(billetera|cuenta)/i,
   /detalle\s+(del?\s+)?(pago|transacci[oó]n|movimiento)/i,
   /\b(primer|segundo|tercer|cuarto|quinto|1|2|3|4|5)[oa]?\s+(pago|transacci[oó]n|movimiento)\b/i,
+  /cobr[ao]r?\w*\s+\d/i,
+  /generar?\s+(un\s+)?cobro/i,
 ];
 
 let _lastMpPayments = [];
@@ -525,6 +530,77 @@ function openMpOAuth() {
   });
 }
 
+let _qrPollInterval = null;
+
+async function handleMpCobrar(amount, description) {
+  setFaceState('processing');
+  try {
+    const res = await fetch(`${API_BASE}/api/mp/create-preference`, {
+      method: 'POST',
+      headers: { ...{ 'Content-Type': 'application/json' }, ..._mpHeaders() },
+      body: JSON.stringify({ amount, description }),
+    });
+    if (res.status === 401) { clearMpToken(); throw new Error('token_expired'); }
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'preference_error');
+
+    const { init_point, external_reference } = data;
+    _showQrModal(amount, description, init_point, external_reference);
+
+    const confirmMsg = `Generé el cobro de ${_fmtVoice(amount)} pesos por ${description}. Mostrá el código QR para que el pagador lo escanee con MercadoPago.`;
+    addMessage('assistant', confirmMsg); setFaceState('idle'); await speak(confirmMsg);
+  } catch (e) {
+    setFaceState('idle');
+    const msg = e.message === 'token_expired'
+      ? 'Tu sesión de MercadoPago expiró. Tocá el botón para volver a conectar.'
+      : `No pude generar el cobro: ${e.message}`;
+    addMessage('assistant', msg); await speak(msg);
+  }
+}
+
+function _showQrModal(amount, description, initPoint, externalRef) {
+  const modal = document.getElementById('qr-modal');
+  const desc  = document.getElementById('qr-modal-desc');
+  const status = document.getElementById('qr-status');
+  const container = document.getElementById('qr-canvas-container');
+
+  desc.textContent = `${_fmtVoice(amount)} pesos — ${description}`;
+  status.textContent = 'Esperando pago...';
+  status.className = 'qr-status';
+  container.innerHTML = '';
+
+  new QRCode(container, { text: initPoint, width: 220, height: 220, correctLevel: QRCode.CorrectLevel.M });
+
+  modal.classList.remove('hidden');
+
+  if (_qrPollInterval) clearInterval(_qrPollInterval);
+  _qrPollInterval = setInterval(async () => {
+    try {
+      const r = await fetch(
+        `${API_BASE}/api/mp/check-payment?external_reference=${encodeURIComponent(externalRef)}`,
+        { headers: _mpHeaders() }
+      );
+      if (!r.ok) return;
+      const d = await r.json();
+      if (d.paid) {
+        clearInterval(_qrPollInterval); _qrPollInterval = null;
+        status.textContent = '¡Pago recibido!';
+        status.className = 'qr-status paid';
+        const msg = `¡Pago recibido! ${_fmtVoice(d.amount ?? amount)} pesos acreditados en tu cuenta de MercadoPago.`;
+        addMessage('assistant', msg);
+        await speak(msg);
+        setTimeout(() => _closeQrModal(), 3000);
+      }
+    } catch (_) {}
+  }, 4000);
+}
+
+function _closeQrModal() {
+  if (_qrPollInterval) { clearInterval(_qrPollInterval); _qrPollInterval = null; }
+  document.getElementById('qr-modal').classList.add('hidden');
+  document.getElementById('qr-canvas-container').innerHTML = '';
+}
+
 async function handleMpPaymentDetail(paymentId) {
   setFaceState('processing');
   try {
@@ -569,6 +645,7 @@ async function handleMpCommand(transcript) {
   }
 
   // Detectar intención
+  const wantsCobro     = /cobr[ao]r?\w*\s+\d|generar?\s+(un\s+)?cobro/i.test(lower);
   const wantsMovements = /movimientos?|transacciones?/i.test(lower);
   const wantsDetail    = /detalle|primer[oa]?|segundo[a]?|tercer[oa]?|cuarto[a]?|quinto[a]?/i.test(lower);
 
@@ -581,6 +658,18 @@ async function handleMpCommand(transcript) {
 
   setFaceState('processing');
   try {
+    if (wantsCobro) {
+      // Extraer monto y descripción: "cobrar 1500 pesos por la cena"
+      const mCobro = lower.match(/(\d[\d.,]*)\s*(?:pesos?)?(?:\s+(?:por|de|para|:|-)\s*(.+))?/);
+      const amount = mCobro ? parseFloat(mCobro[1].replace(',', '.')) : 0;
+      const desc   = mCobro?.[2] ? mCobro[2].trim() : 'Cobro';
+      if (!amount || amount <= 0) {
+        const msg = 'No entendí el monto. Decí por ejemplo: "cobrar 1500 pesos por la cena".';
+        addMessage('assistant', msg); setFaceState('idle'); await speak(msg); return;
+      }
+      await handleMpCobrar(amount, desc);
+      return;
+    }
     if (wantsDetail && _lastMpPayments.length) {
       const idx = (_extractOrdinal(lower) ?? 1) - 1;
       const pago = _lastMpPayments[Math.min(idx, _lastMpPayments.length - 1)];

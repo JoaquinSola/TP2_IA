@@ -245,6 +245,20 @@
     </div>
   </div>
 
+  <!-- ── Modal QR de cobro MP ────────────────────────────────────────────── -->
+  <div id="qr-modal" class="qr-modal hidden" role="dialog" aria-modal="true" aria-label="Código QR de cobro MercadoPago">
+    <div class="qr-modal-content">
+      <div class="qr-modal-header">
+        <span>💳 Cobro con MercadoPago</span>
+        <button id="btn-close-qr" class="close-btn" aria-label="Cancelar cobro">✕</button>
+      </div>
+      <p id="qr-modal-desc" class="qr-modal-desc"></p>
+      <div id="qr-canvas-container"></div>
+      <p class="qr-modal-hint">Mostrá este código al pagador para que escanee con la app de MercadoPago</p>
+      <p id="qr-status" class="qr-status">Esperando pago...</p>
+    </div>
+  </div>
+
   <!-- ── Debug ────────────────────────────────────────────────────────────── -->
   <button id="debug-toggle" class="debug-toggle" aria-label="Abrir panel de debug" title="Debug">🐛</button>
   <div id="debug-panel" class="debug-panel hidden">
@@ -258,6 +272,7 @@
     <div id="debug-log" class="debug-log"></div>
   </div>
 
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <script src="/static/js/app.js"></script>
 </body>
 </html>

@@ -421,6 +421,77 @@ async def mp_payment_detail(payment_id: str, request: Request):
         raise HTTPException(status_code=e.code, detail=f"MP payment error: {body}")
 
 
+@app.post("/api/mp/create-preference")
+async def mp_create_preference(request: Request):
+    """Crea una preferencia de pago MP (Checkout Pro) para cobrar a alguien."""
+    token = request.headers.get("X-MP-Token", "")
+    if not token:
+        raise HTTPException(status_code=401, detail="Token MP no provisto.")
+
+    import urllib.request, json as _json, uuid
+
+    body = await request.json()
+    amount = float(body.get("amount", 0))
+    description = body.get("description", "Cobro") or "Cobro"
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Monto inválido.")
+
+    external_ref = str(uuid.uuid4())
+    pref_body = _json.dumps({
+        "items": [{"title": description, "quantity": 1, "unit_price": amount, "currency_id": "ARS"}],
+        "external_reference": external_ref,
+    }).encode()
+
+    req = urllib.request.Request(
+        "https://api.mercadopago.com/checkout/preferences",
+        data=pref_body,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        loop = asyncio.get_event_loop()
+        def _post():
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return _json.loads(r.read())
+        data = await loop.run_in_executor(None, _post)
+        return {
+            "preference_id":    data.get("id"),
+            "init_point":       data.get("init_point"),
+            "external_reference": external_ref,
+        }
+    except urllib.error.HTTPError as e:
+        body_err = e.read().decode(errors="replace")
+        raise HTTPException(status_code=e.code, detail=f"MP preference error: {body_err}")
+
+
+@app.get("/api/mp/check-payment")
+async def mp_check_payment(external_reference: str, request: Request):
+    """Verifica si un cobro fue pagado buscando por external_reference."""
+    token = request.headers.get("X-MP-Token", "")
+    if not token:
+        raise HTTPException(status_code=401, detail="Token MP no provisto.")
+
+    import urllib.request, urllib.parse, json as _json
+
+    url = ("https://api.mercadopago.com/v1/payments/search?"
+           + urllib.parse.urlencode({"external_reference": external_reference, "status": "approved"}))
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        loop = asyncio.get_event_loop()
+        def _get():
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return _json.loads(r.read())
+        data = await loop.run_in_executor(None, _get)
+        results = data.get("results", [])
+        if results:
+            p = results[0]
+            return {"paid": True, "amount": p.get("transaction_amount"), "payment_id": p.get("id")}
+        return {"paid": False}
+    except urllib.error.HTTPError as e:
+        body_err = e.read().decode(errors="replace")
+        raise HTTPException(status_code=e.code, detail=f"MP check error: {body_err}")
+
+
 @app.get("/api/mp/movements")
 async def mp_movements(request: Request):
     """Retorna los últimos movimientos de pagos MP del usuario."""
