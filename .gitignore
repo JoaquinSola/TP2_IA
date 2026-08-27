@@ -27,3 +27,6 @@ Thumbs.db
 
 # Jupyter (si se usa para pruebas)
 *.ipynb_checkpoints/
+
+# ChromaDB — base de datos vectorial local, se regenera al iniciar
+backend/rag/chroma_db/
