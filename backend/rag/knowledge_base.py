@@ -2,8 +2,10 @@
 RAG con embeddings vectoriales usando ChromaDB y sentence-transformers.
 La colección persiste en backend/rag/chroma_db/.
 Al primer arranque con colección vacía, indexa automáticamente los documentos semilla.
+Desactivar con DISABLE_RAG=true (Railway free tier — insuficiente RAM).
 """
 import hashlib
+import os
 from pathlib import Path
 
 import chromadb
@@ -34,11 +36,7 @@ _SEED_DOCUMENTS = [
     "Billete de 2000 pesos argentinos. Colores gris oscuro, rojo y rosado. Muestra en el anverso los retratos de los médicos precursores de la medicina argentina Cecilia Grierson y Ramón Carrillo. El reverso muestra la fachada del Instituto Nacional de Microbiología Dr. Carlos G. Malbrán.",
     "Billete de 10000 pesos argentinos. Colores celeste y azul. Muestra en el anverso los retratos de Manuel Belgrano y de María Remedios del Valle (nombrada Capitana del Ejército del Norte). El reverso muestra la recreación artística de la Jura de la Bandera del 27 de febrero de 1812.",
     "Billete de 20000 pesos argentinos. Color azul predominante. Muestra en el anverso el retrato de Juan Bautista Alberdi (inspirador de la Constitución Nacional de 1853). El reverso ilustra la recreación de la casa natal del prócer.",
-    "Billetes fuera de curso legal o inválidos en Argentina: billetes de 2, 5 y 10 pesos argentinos (ya desmonetizados), divisas extranjeras (dólares, euros), billetes de fantasía o juegos, tarjetas plásticas, monedas (son de curso legal pero no son billetes) y billetes cuya superficie esté deteriorada o fragmentada en más del 40% sin numeración legible.",
-    # Identificación de billetes sostenidos en la mano (visibilidad parcial)
-    "Identificación de billetes sostenidos en la mano. Todos los billetes argentinos tienen el número de denominación impreso en tipografía grande en los dos ángulos frontales superiores (guarismos). Cuando el usuario sostiene billetes abanicados en la mano, la palma cubre el centro pero los ángulos quedan expuestos. El número visible en el ángulo ES la denominación exacta del billete. Este número es la pista más confiable incluso con el 50% del billete cubierto.",
-    "Pistas visuales por denominación cuando el billete está parcialmente cubierto en la mano. 100 pesos: número '100' en violeta o marrón visible en ángulo superior. 200 pesos: número '200' en rosado o azul grisáceo. 500 pesos: número '500' en verde intenso. 1000 pesos: número '1000' en naranja brillante. 2000 pesos: número '2000' en gris oscuro con borde rojo. 10000 pesos: número '10000' en celeste. 20000 pesos: número '20000' en azul. El color del número coincide con el color dominante del billete.",
-    "Billetes argentinos abanicados en la mano: cuando se sostienen varios billetes como un abanico o baraja, los billetes quedan superpuestos mostrando solo la parte superior o el lateral de cada uno. La posición correcta es describir el orden en que aparecen de izquierda a derecha o de adelante hacia atrás: 'primero desde la izquierda', 'segundo', 'tercero', etc. El número del ángulo superior de cada billete visible permite identificar la denominación aunque el resto esté tapado por otro billete o por la mano.",
+    "Billetes fuera de curso legal o inválidos en Argentina: billetes de 2 y 5 pesos argentinos (ya desmonetizados), divisas extranjeras (dólares, euros), billetes de fantasía o juegos, tarjetas plásticas, monedas (son de curso legal pero no son billetes) y billetes cuya superficie esté deteriorada o fragmentada en más del 40% sin numeración legible.",
     # Información general de facturas argentinas
     "Los datos más importantes de una factura argentina son: razón social empresa emisora, importe total a pagar, fecha de vencimiento primer vencimiento y segundo vencimiento si aplica. El CUIT es el identificador tributario de la empresa.",
     "Una factura puede tener múltiples vencimientos. El primer vencimiento tiene menor importe. El segundo vencimiento tiene recargo por mora o interés punitorio. Si la fecha actual superó el primer vencimiento, se debe pagar el importe del segundo vencimiento.",
@@ -90,6 +88,8 @@ def _seed_if_missing(collection):
 
 
 def retrieve_context(query: str, top_k: int = 3) -> str:
+    if os.getenv("DISABLE_RAG", "").lower() in ("1", "true", "yes"):
+        return ""
     if not query.strip():
         return ""
 

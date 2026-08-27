@@ -6,7 +6,6 @@ import asyncio
 import base64
 import io
 import os
-import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -23,7 +22,7 @@ from langchain_core.messages import HumanMessage
 
 from backend.models.schemas import ChatRequest, ChatResponse
 from backend.sessions.manager import get_or_create_session, reset_transaction
-from backend.agent.graph import graph, get_gemini_client
+from backend.agent.graph import graph, get_client
 from backend.agent.state import AgentState
 from backend.observability.logger import log_session_start, get_session_logs
 
@@ -44,28 +43,26 @@ if _FRONTEND.exists():
 
 @app.on_event("startup")
 async def _warmup():
-    def _load_rag():
+    if os.getenv("DISABLE_RAG", "").lower() in ("1", "true", "yes"):
+        print("[startup] RAG desactivado (DISABLE_RAG=true).")
+        return
+
+    def _load():
         from backend.rag.knowledge_base import retrieve_context
         retrieve_context("warmup factura billete")
 
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _load_rag)
-    print("[startup] Modelo de embeddings RAG cargado en memoria.")
+    asyncio.ensure_future(loop.run_in_executor(None, _load))
+    print("[startup] Cargando modelo RAG en background...")
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
-
-_STATIC_VERSION = str(int(time.time()))  # cambia en cada restart del servidor
 
 @app.get("/")
 async def root():
     index = _FRONTEND / "index.html"
     if index.exists():
-        html = index.read_text(encoding="utf-8")
-        html = html.replace('app.js"', f'app.js?v={_STATIC_VERSION}"')
-        html = html.replace('style.css"', f'style.css?v={_STATIC_VERSION}"')
-        return Response(content=html, media_type="text/html",
-                        headers={"Cache-Control": "no-store"})
+        return FileResponse(str(index))
     return {"status": "ok", "message": "Agente IA backend corriendo."}
 
 
@@ -223,18 +220,28 @@ async def transcribe_audio(audio: UploadFile = File(...)):
     if len(audio_bytes) > 25 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="El archivo supera 25 MB.")
 
+    # Determinar nombre de archivo con extensión correcta para Groq Whisper
     mime = audio.content_type or "audio/mpeg"
+    ext_map = {
+        "audio/mpeg": "mp3", "audio/mp3": "mp3",
+        "audio/mp4": "mp4", "audio/m4a": "m4a",
+        "audio/wav": "wav", "audio/x-wav": "wav",
+        "audio/ogg": "ogg", "audio/webm": "webm",
+        "video/mp4": "mp4", "video/webm": "webm",
+        "video/3gpp": "mp4", "video/quicktime": "mp4",
+    }
+    ext = ext_map.get(mime, "mp3")
+    filename = f"audio.{ext}"
 
     def _transcribe() -> str:
-        from google.genai import types as genai_types
-        response = get_gemini_client().models.generate_content(
-            model=os.getenv("GEMINI_TEXT_MODEL", "gemini-2.0-flash"),
-            contents=[
-                genai_types.Part.from_bytes(data=audio_bytes, mime_type=mime),
-                "Transcribí el siguiente audio al español. Devolvé solo el texto transcripto, sin comentarios adicionales.",
-            ],
+        client = get_client()
+        transcription = client.audio.transcriptions.create(
+            file=(filename, audio_bytes),
+            model="whisper-large-v3-turbo",
+            language="es",
+            response_format="text",
         )
-        return response.text.strip() if response.text else ""
+        return transcription if isinstance(transcription, str) else transcription.text
 
     try:
         transcript = await asyncio.get_event_loop().run_in_executor(None, _transcribe)
@@ -290,31 +297,12 @@ async def get_logs(session_id: str):
     return {"session_id": session_id, "log_count": len(logs), "logs": logs}
 
 
-@app.get("/api/dolar")
-async def get_dolar():
-    """Cotización del dólar desde dolarapi.com (proxy para evitar CORS)."""
-    import urllib.request
-    import json as _json
-    def _fetch():
-        req = urllib.request.Request(
-            "https://dolarapi.com/v1/dolares",
-            headers={"User-Agent": "ACLA-Bot/1.0"},
-        )
-        with urllib.request.urlopen(req, timeout=5) as r:
-            return _json.loads(r.read())
-    try:
-        data = await asyncio.get_event_loop().run_in_executor(None, _fetch)
-        return data
-    except Exception:
-        raise HTTPException(status_code=503, detail="No se pudo obtener la cotización del dólar.")
-
-
 @app.get("/api/health")
 async def health():
     return {
         "status": "ok",
-        "text_model": os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash"),
-        "vision_model": f"ollama/{os.getenv('OLLAMA_VISION_MODEL', 'llava:13b')}",
+        "text_model": os.getenv("GROQ_TEXT_MODEL", "llama-3.3-70b-versatile"),
+        "vision_model": os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
     }
 
 
