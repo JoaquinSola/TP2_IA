@@ -46,6 +46,7 @@ const state = {
 
 let conversationMode = false;
 let isSpeaking = false; // true mientras el bot reproduce audio — bloquea el mic
+let _lastBotResponse = '';
 
 const API_BASE = window.location.origin;
 
@@ -84,6 +85,75 @@ const btnCaptureInvoiceMobile = document.getElementById('btn-capture-invoice-mob
 const btnCaptureBillsMobile   = document.getElementById('btn-capture-bills-mobile');
 const cameraChoiceMobile      = document.getElementById('camera-choice-mobile');
 const cameraControlsDesktop   = document.getElementById('camera-controls-desktop');
+
+/* ─── Cara animada ──────────────────────────────────────────────────────── */
+const faceEl     = document.getElementById('bot-face');
+const faceStatus = document.getElementById('face-status');
+let _faceText = 'Listo';
+
+function setFaceState(st, text) {
+  if (faceEl) faceEl.className = st;
+  if (faceStatus) {
+    if (text) _faceText = text.length > 80 ? text.slice(0, 77) + '...' : text;
+    faceStatus.textContent =
+      st === 'listening'  ? 'Escuchando...' :
+      st === 'processing' ? 'Procesando...' :
+      _faceText;
+  }
+}
+
+/* ─── Lip sync via AnalyserNode ─────────────────────────────────────────── */
+let _analyser = null;
+let _mouthAnimFrame = null;
+
+function getAnalyser() {
+  if (!_analyser) {
+    const ctx = _getAudioContext();
+    _analyser = ctx.createAnalyser();
+    _analyser.fftSize = 256;
+    _analyser.smoothingTimeConstant = 0.65;
+  }
+  return _analyser;
+}
+
+function setMouthOpening(t) { // t: 0 (cerrada) a 1 (abierta)
+  const bar = document.getElementById('mouth-bar');
+  if (!bar) return;
+  const CENTER_Y = 223, MIN_H = 5, MAX_H = 52;
+  const h = MIN_H + (MAX_H - MIN_H) * t;
+  bar.setAttribute('height', h);
+  bar.setAttribute('y', CENTER_Y - h / 2);
+}
+
+function startMouthAnimation(analyser) {
+  stopMouthAnimation();
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  function frame() {
+    analyser.getByteTimeDomainData(data);
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
+    setMouthOpening(Math.min(1, Math.sqrt(sum / data.length) * 6));
+    _mouthAnimFrame = requestAnimationFrame(frame);
+  }
+  _mouthAnimFrame = requestAnimationFrame(frame);
+}
+
+function stopMouthAnimation() {
+  if (_mouthAnimFrame) { cancelAnimationFrame(_mouthAnimFrame); _mouthAnimFrame = null; }
+  setMouthOpening(0);
+}
+
+/* ─── Parpadeo aleatorio ────────────────────────────────────────────────── */
+function scheduleBlink() {
+  setTimeout(() => {
+    document.querySelectorAll('.eye-screen').forEach(el => el.setAttribute('fill', '#0d0d20'));
+    setTimeout(() => {
+      document.querySelectorAll('.eye-screen').forEach(el => el.setAttribute('fill', '#000a1e'));
+      scheduleBlink();
+    }, 130);
+  }, 3000 + Math.random() * 5000);
+}
+scheduleBlink();
 
 /* ═══════════════════════════════════════════════════════════════════════════
    TTS — Web Audio API (funciona en iOS/Android después de operaciones async)
@@ -165,6 +235,7 @@ async function speakProcessing() {
 async function speak(text) {
   if (!text) return;
   isSpeaking = true;
+  setFaceState('speaking', text);
   stopListening();       // Cerrar mic antes de hablar
   stopProcessingAudio(); // Cancelar "Procesando..." si todavía corre
 
@@ -179,8 +250,14 @@ async function speak(text) {
       const voices = speechSynthesis.getVoices();
       const esVoice = voices.find(v => v.lang.startsWith('es'));
       if (esVoice) utt.voice = esVoice;
-      utt.onend = () => { isSpeaking = false; resolve(); };
-      utt.onerror = () => { isSpeaking = false; resolve(); };
+      utt.onboundary = (e) => {
+        if (e.name === 'word') {
+          setMouthOpening(0.35 + Math.random() * 0.55);
+          setTimeout(() => setMouthOpening(0.05), 100 + Math.random() * 80);
+        }
+      };
+      utt.onend = () => { setMouthOpening(0); isSpeaking = false; setFaceState('idle'); resolve(); };
+      utt.onerror = () => { setMouthOpening(0); isSpeaking = false; setFaceState('idle'); resolve(); };
       speechSynthesis.speak(utt);
     });
     return;
@@ -194,7 +271,7 @@ async function speak(text) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: text.substring(0, 800) }),
     });
-    if (!res.ok) { isSpeaking = false; return; }
+    if (!res.ok) { isSpeaking = false; setFaceState('idle'); return; }
     const arrayBuffer = await res.arrayBuffer();
     const ctx = _getAudioContext();
     if (ctx.state === 'suspended') await ctx.resume();
@@ -204,13 +281,24 @@ async function speak(text) {
       _audioSource = ctx.createBufferSource();
       _audioSource.buffer = audioBuffer;
       _audioSource.playbackRate.value = 1.15;
-      _audioSource.connect(ctx.destination);
-      _audioSource.onended = () => { _audioSource = null; isSpeaking = false; resolve(); };
+      const analyser = getAnalyser();
+      _audioSource.connect(analyser);
+      analyser.connect(ctx.destination);
+      startMouthAnimation(analyser);
+      _audioSource.onended = () => {
+        stopMouthAnimation();
+        _audioSource = null;
+        isSpeaking = false;
+        setFaceState('idle');
+        resolve();
+      };
       _audioSource.start(0);
     });
   } catch (err) {
     console.warn('TTS error:', err);
+    stopMouthAnimation();
     isSpeaking = false;
+    setFaceState('idle');
   }
 }
 
@@ -241,6 +329,48 @@ const ADD_BILLS_WORDS = [
   /tengo\s+m[aá]s/i,
 ];
 
+// Comandos de repetición y ayuda
+const REPEAT_WORDS = [
+  /repet[ií](me)?(\s+eso)?/i,
+  /\¿?qu[eé]\s+dijiste\??/i,
+  /no\s+(te?\s+)?escuch[eé]/i,
+  /no\s+entend[ií]/i,
+  /pod[eé]s\s+repetir/i,
+  /otra\s+vez(\s+por\s+favor)?/i,
+];
+
+const DOLLAR_WORDS = [
+  /d[oó]lar/i,
+  /cotizaci[oó]n/i,
+  /tipo\s+de\s+cambio/i,
+  /\bblue\b/i,
+  /cu[aá]nto\s+(vale|est[aá]|cuesta)\s+(el\s+)?d[oó]lar/i,
+];
+
+const CALC_WORDS = [
+  /\bsomos\s+(\d+|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)/i,
+  /\bdivid(?:í|ir|imos|amos)\b/i,          // dividí, dividir, dividimos, dividamos
+  /\breparti(?:r|mos|d)\b/i,               // repartir, repartimos, repartid
+  /\bpropina\b/i,
+  /\d+\s*%/,
+  /\bpor\s+ciento\b/i,
+  /\bcuotas?\b/i,
+  /cu[aá]nto\s+(paga|toca|corresponde|cobra)\s+(cada|por\s+persona)/i,
+  /\bcalcul[aá]/i,                          // calculá, calcular
+  /entre\s+(\d+|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\s*(personas?)?/i,
+];
+
+const HELP_WORDS = [
+  /c[oó]mo\s+funcio(n[aá]s?|na)/i,
+  /c[oó]mo\s+(te\s+)?(us[ao]|util[ií]z)/i,
+  /qu[eé]\s+pod[eé]s\s+(hacer|hac[eé]r)/i,
+  /qu[eé]\s+sab[eé]s\s+(hacer|hac[eé]r)/i,
+  /qu[eé]\s+(son\s+)?tus\s+funciones/i,
+  /explic[aá](me)?(\s+c[oó]mo)?/i,
+  /instrucciones/i,
+  /para\s+qu[eé]\s+sirv[eé]s/i,
+];
+
 // Comandos para reiniciar la transacción (siempre activos)
 const RESET_WORDS = [
   /reinici[ao]r?/i,
@@ -262,6 +392,171 @@ async function handleAddBillsCommand(transcript) {
   state.addBillsMode = true;
   await speak('Bien, poné los billetes adicionales sobre la superficie y tomá una foto.');
   showVoiceCameraOverlay('bills', 'billetes adicionales');
+}
+
+async function handleRepeatCommand(transcript) {
+  if (transcript) addMessage('user', transcript);
+  if (_lastBotResponse) {
+    await speak(_lastBotResponse);
+  } else {
+    const msg = 'No tengo nada para repetir todavía.';
+    addMessage('assistant', msg);
+    await speak(msg);
+  }
+  if (conversationMode) triggerListenWithCue();
+}
+
+async function handleHelpCommand(transcript) {
+  if (transcript) addMessage('user', transcript);
+  const msg = 'Puedo hacer tres cosas: leer facturas y decirte cuánto debés y cuándo vence, identificar los billetes que tenés y cuánto suman, y calcular si te alcanza el dinero y cuánto vuelto esperás. Mandame una foto de tu factura o tus billetes, o decime qué necesitás.';
+  addMessage('assistant', msg);
+  await speak(msg);
+  if (conversationMode) triggerListenWithCue();
+}
+
+/* ─── Helpers de cálculo ────────────────────────────────────────────────── */
+const _NUM_WORDS = {
+  'uno':1,'una':1,'dos':2,'tres':3,'cuatro':4,'cinco':5,
+  'seis':6,'siete':7,'ocho':8,'nueve':9,'diez':10,
+  'once':11,'doce':12,'trece':13,'catorce':14,'quince':15,
+  'veinte':20,
+};
+function _parseNum(s) {
+  if (!s) return null;
+  const w = _NUM_WORDS[s.toLowerCase()];
+  if (w !== undefined) return w;
+  const n = parseFloat(s.replace(/\./g, '').replace(',', '.'));
+  return isNaN(n) ? null : n;
+}
+const _fmtVoice = (n) => Number(Math.round(n)).toLocaleString('es-AR');
+
+/* ─── Feature: cotización del dólar ─────────────────────────────────────── */
+async function handleDollarCommand(transcript) {
+  if (transcript) addMessage('user', transcript);
+  setFaceState('processing');
+  try {
+    const res = await fetch(`${API_BASE}/api/dolar`);
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    const oficial = data.find(d => d.casa === 'oficial');
+    const blue    = data.find(d => d.casa === 'blue');
+    const bolsa   = data.find(d => d.casa === 'bolsa');
+    const parts = [];
+    if (oficial) parts.push(`el oficial a ${_fmtVoice(oficial.venta)} pesos`);
+    if (blue)    parts.push(`el blue a ${_fmtVoice(blue.venta)} pesos`);
+    if (bolsa)   parts.push(`el MEP a ${_fmtVoice(bolsa.venta)} pesos`);
+    if (!parts.length) throw new Error();
+    const msg = `El dólar hoy: ${parts.join(', ')}.`;
+    addMessage('assistant', msg);
+    setFaceState('idle');
+    await speak(msg);
+  } catch {
+    setFaceState('idle');
+    const msg = 'No pude obtener la cotización en este momento. Verificá tu conexión e intentá de nuevo.';
+    addMessage('assistant', msg);
+    await speak(msg);
+  }
+  if (conversationMode) triggerListenWithCue();
+}
+
+/* ─── Feature: calculadora cotidiana ───────────────────────────────────── */
+async function handleCalcCommand(transcript) {
+  if (transcript) addMessage('user', transcript);
+  const t = transcript.toLowerCase();
+  let msg = null;
+
+  // ── División / reparto ───────────────────────────────────────────────────
+  // Intenta resolver N personas desde ambos patrones antes de rendirse
+  const peopleM  = t.match(/somos\s+(\w+)/);
+  const betweenM = t.match(/(?:entre|para|dividido\s+(?:por|entre))\s+(\w+)(?:\s+personas?)?/);
+  const amtM     = t.match(/(\d[\d.,]*)\s*pesos?/);  // más permisivo que antes
+
+  let n = null;
+  if (peopleM)        n = _parseNum(peopleM[1]);
+  if (!n && betweenM) n = _parseNum(betweenM[1]);
+
+  if (n && n >= 2 && amtM) {
+    const amt = _parseNum(amtM[1]);
+    if (amt)
+      msg = `${_fmtVoice(amt)} pesos entre ${n} personas: ${_fmtVoice(Math.ceil(amt / n))} pesos cada una.`;
+  }
+
+  // ── Porcentaje / propina ─────────────────────────────────────────────────
+  // Acepta "%" o "por ciento", y "de" o "sobre" (o ninguno) entre % y el monto
+  if (!msg) {
+    const pctM = t.match(/(\d+(?:[.,]\d+)?)\s*(?:%|por\s+ciento)\s+(?:de|sobre)?\s*(\d[\d.,]*)/);
+    if (pctM) {
+      const p = parseFloat(pctM[1].replace(',', '.')), base = _parseNum(pctM[2]);
+      if (!isNaN(p) && base) {
+        const result = Math.round(base * p / 100);
+        msg = `El ${p}% de ${_fmtVoice(base)} pesos son ${_fmtVoice(result)} pesos.`;
+        if (/propina|total|con\s+propina/.test(t))
+          msg += ` Total con propina: ${_fmtVoice(base + result)} pesos.`;
+      }
+    }
+  }
+
+  // ── Cuotas ───────────────────────────────────────────────────────────────
+  // Acepta "50.000 pesos en 12 cuotas" Y también "12 cuotas de 50.000 pesos"
+  if (!msg) {
+    const q1 = t.match(/(\d[\d.,]*)\s*pesos?\s+en\s+(\d+)\s+cuotas?/);
+    const q2 = t.match(/(\d+)\s+cuotas?\s+(?:de\s+)?(\d[\d.,]*)\s*pesos?/);
+    let total = null, cuotas = null;
+    if (q1)      { total = _parseNum(q1[1]); cuotas = parseInt(q1[2]); }
+    else if (q2) { cuotas = parseInt(q2[1]); total  = _parseNum(q2[2]); }
+    if (total && cuotas && cuotas >= 2)
+      msg = `${_fmtVoice(total)} pesos en ${cuotas} cuotas: ${_fmtVoice(Math.ceil(total / cuotas))} pesos por cuota.`;
+  }
+
+  if (!msg)
+    msg = 'No entendí el cálculo. Podés decirme: "somos 4, la cuenta es 12.000 pesos", "el 15% de 8.000 pesos", o "50.000 pesos en 12 cuotas".';
+  addMessage('assistant', msg);
+  await speak(msg);
+  if (conversationMode) triggerListenWithCue();
+}
+
+/* ─── Feature: recordatorio de vencimientos (localStorage) ─────────────── */
+const _STORAGE_INVOICES = 'acla_invoices';
+
+function _parseDueDateFE(str) {
+  if (!str) return null;
+  let m;
+  if ((m = str.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)))
+    return new Date(+m[3], +m[2] - 1, +m[1]);
+  if ((m = str.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/)))
+    return new Date(2000 + +m[3], +m[2] - 1, +m[1]);
+  if ((m = str.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/)))
+    return new Date(+m[1], +m[2] - 1, +m[3]);
+  return null;
+}
+
+function saveInvoiceToStorage(inv) {
+  if (!inv?.due_date) return;
+  const entries = JSON.parse(localStorage.getItem(_STORAGE_INVOICES) || '[]');
+  const key = `${inv.entity || 'desconocida'}_${inv.due_date}`;
+  const filtered = entries.filter(e => `${e.entity || 'desconocida'}_${e.due_date}` !== key);
+  filtered.push({ entity: inv.entity || 'un servicio', amount: inv.total_amount, due_date: inv.due_date });
+  localStorage.setItem(_STORAGE_INVOICES, JSON.stringify(filtered.slice(-30)));
+}
+
+function checkDueReminders() {
+  const entries = JSON.parse(localStorage.getItem(_STORAGE_INVOICES) || '[]');
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const reminders = [];
+  for (const inv of entries) {
+    const due = _parseDueDateFE(inv.due_date);
+    if (!due) continue;
+    due.setHours(0, 0, 0, 0);
+    const delta = Math.round((due - today) / 86400000);
+    if (delta < -7 || delta > 3) continue;
+    const when = delta < 0
+      ? `venció hace ${Math.abs(delta)} día${Math.abs(delta) !== 1 ? 's' : ''}`
+      : delta === 0 ? 'vence hoy'
+      : delta === 1 ? 'vence mañana'
+      : `vence en ${delta} días`;
+    reminders.push({ label: `La factura de ${inv.entity} ${when}`, delta });
+  }
+  return reminders.sort((a, b) => a.delta - b.delta);
 }
 
 async function handleResetCommand(transcript) {
@@ -309,10 +604,13 @@ function initSpeechRecognition() {
     }
 
     // Comando de voz para abrir facturas digitales
-    // STT no es gesto de usuario → mostrar overlay igual que con la cámara
     if (matchVoiceCmd(lower, DIGITAL_INVOICE_WORDS)) {
       addMessage('user', transcript);
-      showDigitalVoiceOverlay();
+      if (_cachedDirHandle) {
+        openDigitalInvoicesFlow(); // permisos ya dados → ir directo
+      } else {
+        showDigitalVoiceOverlay(); // primera vez sin permisos → overlay con tap
+      }
       return;
     }
 
@@ -327,6 +625,12 @@ function initSpeechRecognition() {
       handleResetCommand(transcript);
       return;
     }
+
+    // Repetición, ayuda, dólar y calculadora (siempre activos)
+    if (matchVoiceCmd(lower, REPEAT_WORDS)) { handleRepeatCommand(transcript); return; }
+    if (matchVoiceCmd(lower, HELP_WORDS))   { handleHelpCommand(transcript);   return; }
+    if (matchVoiceCmd(lower, DOLLAR_WORDS)) { handleDollarCommand(transcript); return; }
+    if (matchVoiceCmd(lower, CALC_WORDS))   { handleCalcCommand(transcript);   return; }
 
     // Comandos de cámara por voz
     // El browser bloquea file input .click() desde SpeechRecognition (no es gesto de usuario).
@@ -365,6 +669,7 @@ function startListening() {
     }
   };
   state.isListening = true;
+  setFaceState('listening');
   btnMic.classList.add('active');
   btnMic.setAttribute('aria-pressed', 'true');
   try {
@@ -377,6 +682,7 @@ function startListening() {
 
 function stopListening() {
   state.isListening = false;
+  if (!isSpeaking) setFaceState('idle');
   btnMic.classList.remove('active');
   btnMic.setAttribute('aria-pressed', 'false');
   if (state.recognition) { try { state.recognition.stop(); } catch (_) {} }
@@ -520,12 +826,58 @@ function setPendingImage(base64, mime, purpose, dataUrl) {
   textInput.focus();
 }
 
+function _resizeImage(dataUrl, maxPx = 1280, quality = 0.82) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const longest = Math.max(img.width, img.height);
+      if (longest <= maxPx) { resolve(dataUrl); return; }
+      const scale = maxPx / longest;
+      const canvas = document.createElement('canvas');
+      canvas.width  = Math.round(img.width  * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+function _checkImageBrightness(dataUrl) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const W = 80, H = 80;
+      const c = document.createElement('canvas');
+      c.width = W; c.height = H;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0, W, H);
+      const d = ctx.getImageData(0, 0, W, H).data;
+      let sum = 0;
+      for (let i = 0; i < d.length; i += 4)
+        sum += d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+      resolve(sum / (W * H));
+    };
+    img.onerror = () => resolve(128);
+    img.src = dataUrl;
+  });
+}
+
 function handleFileSelect(file, purpose, autoSend = false) {
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = (e) => {
-    const dataUrl = e.target.result;
-    setPendingImage(dataUrl.split(',')[1], file.type || 'image/jpeg', purpose, dataUrl);
+  reader.onload = async (e) => {
+    const dataUrl = await _resizeImage(e.target.result);
+    const brightness = await _checkImageBrightness(dataUrl);
+    if (brightness < 45) {
+      const msg = 'La foto parece muy oscura. Buscá mejor iluminación e intentá de nuevo.';
+      addMessage('assistant', msg);
+      await speak(msg);
+      if (conversationMode) triggerListenWithCue();
+      return;
+    }
+    setPendingImage(dataUrl.split(',')[1], 'image/jpeg', purpose, dataUrl);
     if (autoSend) setTimeout(() => sendMessage(), 700);
   };
   reader.readAsDataURL(file);
@@ -547,6 +899,7 @@ btnClearImage.addEventListener('click', () => {
 
 /* ─── Chat helpers ───────────────────────────────────────────────────────── */
 function addMessage(role, text, imgSrc) {
+  if (role === 'assistant' && text) _lastBotResponse = text;
   const wrapper = document.createElement('div');
   wrapper.className = `message ${role}`;
   wrapper.setAttribute('role', 'log');
@@ -568,6 +921,7 @@ function addMessage(role, text, imgSrc) {
 function setLoading(show) {
   loadingIndicator.classList.toggle('hidden', !show);
   btnSend.disabled = show;
+  if (show) setFaceState('processing');
 }
 
 /* ─── Envío de mensajes ─────────────────────────────────────────────────── */
@@ -590,10 +944,19 @@ async function sendMessage() {
     return;
   }
 
+  if (!hasImage && matchVoiceCmd(text.toLowerCase(), REPEAT_WORDS)) { textInput.value = ''; handleRepeatCommand(text); return; }
+  if (!hasImage && matchVoiceCmd(text.toLowerCase(), HELP_WORDS))   { textInput.value = ''; handleHelpCommand(text);   return; }
+  if (!hasImage && matchVoiceCmd(text.toLowerCase(), DOLLAR_WORDS)) { textInput.value = ''; handleDollarCommand(text); return; }
+  if (!hasImage && matchVoiceCmd(text.toLowerCase(), CALC_WORDS))   { textInput.value = ''; handleCalcCommand(text);   return; }
+
   // Comando de facturas digitales escrito/dictado
   if (!hasImage && matchVoiceCmd(text.toLowerCase(), DIGITAL_INVOICE_WORDS)) {
     textInput.value = '';
-    showDigitalVoiceOverlay();
+    if (_cachedDirHandle) {
+      openDigitalInvoicesFlow();
+    } else {
+      showDigitalVoiceOverlay();
+    }
     return;
   }
 
@@ -635,6 +998,8 @@ async function sendMessage() {
     paymentResult = data.payment_result;
     if (paymentResult) state.lastPaymentInsufficient = !paymentResult.sufficient;
     state.addBillsMode = false;
+    if (data.invoice_data?.due_date && data.invoice_data?.is_valid_document !== false)
+      saveInvoiceToStorage(data.invoice_data);
     addMessage('assistant', data.response);
   } catch (err) {
     const rawMsg = err.message || '';
@@ -693,8 +1058,13 @@ btnReset.addEventListener('click', async () => {
   if (state.sessionId) {
     try { await fetch(`${API_BASE}/api/reset?session_id=${state.sessionId}`, { method: 'POST' }); } catch (_) {}
   }
+  state.sessionId = null;
   paymentPanel.classList.add('hidden');
-  const msg = 'Transacción reiniciada. ¿Qué factura querés pagar?';
+  imagePreviewContainer.classList.add('hidden');
+  imagePreview.src = '';
+  textInput.value = '';
+  chatMessages.innerHTML = '';
+  const msg = 'Hola, soy tu asistente de pagos. Puedo leer tus facturas e identificar tus billetes. ¿Qué necesitás?';
   addMessage('assistant', msg);
   speak(msg);
 });
@@ -732,19 +1102,34 @@ async function startAccessibilityMode() {
   accessibilityOverlay.classList.add('fade-out');
   setTimeout(() => accessibilityOverlay.classList.add('hidden'), 400);
 
-  // Activar modo conversación automáticamente
+  // Solo precargar el handle si el permiso ya está vigente — nunca pedir carpeta al inicio
+  if (window.showDirectoryPicker && !_cachedDirHandle) {
+    try {
+      const handle = await _loadDirHandle();
+      if (handle) {
+        const perm = await handle.queryPermission({ mode: 'read' });
+        if (perm === 'granted') _cachedDirHandle = handle;
+        else await _clearDirHandle();
+      }
+    } catch (_) {}
+  }
+
+  // Limpiar chat y activar modo conversación
+  chatMessages.innerHTML = '';
   conversationMode = true;
   btnConversation.classList.add('active');
   btnConversation.setAttribute('aria-pressed', 'true');
 
-  // Mensaje de bienvenida completo con instrucciones de uso táctil
-  const welcome = [
-    'Hola, soy tu asistente de pagos.',
-    'Puedo leer tus facturas e identificar tus billetes.',
-    'Decime qué necesitás.'
-  ].join(' ');
-
+  const welcome = 'Hola, soy tu asistente de pagos. Puedo leer tus facturas e identificar tus billetes. Decime qué necesitás.';
+  addMessage('assistant', welcome);
   await speak(welcome);
+
+  const reminders = checkDueReminders();
+  for (const r of reminders) {
+    addMessage('assistant', r.label + '.');
+    await speak(r.label + '.');
+  }
+
   triggerListenWithCue();
 }
 
@@ -770,6 +1155,8 @@ const DIGITAL_INVOICE_WORDS = [
   /pagar\s+(una\s+)?factura\s+(del\s+cel(ular)?|digital|descargada)/i,
 ];
 
+let _cachedDirHandle = null; // sincronizado con IDB; si no es null, permisos ya otorgados
+
 /* ─── IndexedDB: persistir handle de directorio entre sesiones ─────────── */
 function _openDigitalIDB() {
   return new Promise((resolve, reject) => {
@@ -793,6 +1180,7 @@ async function _loadDirHandle() {
 }
 
 async function _saveDirHandle(handle) {
+  _cachedDirHandle = handle;
   try {
     const db = await _openDigitalIDB();
     await new Promise((resolve, reject) => {
@@ -805,6 +1193,7 @@ async function _saveDirHandle(handle) {
 }
 
 async function _clearDirHandle() {
+  _cachedDirHandle = null;
   try {
     const db = await _openDigitalIDB();
     await new Promise((resolve) => {
@@ -904,6 +1293,7 @@ btnCloseDigital.addEventListener('click', () => {
 
 /* ─── Flujo principal ───────────────────────────────────────────────────── */
 async function openDigitalInvoicesFlow() {
+  _digitalInvoiceCallback = null; // limpiar cualquier callback colgado de una sesión anterior
   if (!window.showDirectoryPicker) {
     const msg = 'Las facturas digitales requieren Chrome en Android. En este dispositivo no está disponible.';
     addMessage('assistant', msg);
@@ -1062,9 +1452,10 @@ function filterPDFs(pdfs, transcript) {
 
 /* ─── Flujo de selección ────────────────────────────────────────────────── */
 async function askForEmisor(allPdfs, restoreConversation) {
-  const question = '¿De qué empresa es o cuándo la descargaste? Podés decir el nombre, como EPE o ASSA, o la fecha, como "hoy", "ayer" o "el lunes". Si querés ver todas, decí "todas".';
+  const question = '¿De qué empresa es o cuándo la descargaste?';
   addMessage('assistant', question);
   await speak(question);
+  await new Promise(r => setTimeout(r, 700)); // esperar que el eco del TTS se disipe
   startListening();
 
   _digitalInvoiceCallback = async (transcript) => {
@@ -1221,6 +1612,27 @@ function showDigitalVoiceOverlay() {
   overlay.addEventListener('click', onTap);
 }
 
+/* ─── Controls drawer ────────────────────────────────────────────────────── */
+const controlsDrawer   = document.getElementById('controls-drawer');
+const controlsBackdrop = document.getElementById('controls-backdrop');
+const fabOpen          = document.getElementById('fab-open');
+const fabClose         = document.getElementById('fab-close');
+
+function openDrawer() {
+  controlsDrawer.classList.remove('hidden');
+  requestAnimationFrame(() => controlsDrawer.classList.add('open'));
+}
+
+function closeDrawer() {
+  controlsDrawer.classList.remove('open');
+  setTimeout(() => controlsDrawer.classList.add('hidden'), 330);
+}
+
+fabOpen.addEventListener('click', openDrawer);
+fabClose.addEventListener('click', closeDrawer);
+controlsBackdrop.addEventListener('click', closeDrawer);
+document.getElementById('face-screen').addEventListener('click', openDrawer);
+
 /* ─── Init ───────────────────────────────────────────────────────────────── */
 if (window.speechSynthesis) speechSynthesis.onvoiceschanged = () => {};
 
@@ -1228,7 +1640,8 @@ if (isMobile()) {
   const tip = document.getElementById('desktop-tip');
   if (tip) tip.remove();
 } else {
-  // En desktop, saltear la pantalla de inicio y enfocar el input
+  // En desktop: saltear pantalla de inicio y abrir drawer directamente
   accessibilityOverlay.classList.add('hidden');
-  textInput.focus();
+  openDrawer();
+  setTimeout(() => textInput.focus(), 350);
 }

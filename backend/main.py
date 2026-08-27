@@ -6,6 +6,7 @@ import asyncio
 import base64
 import io
 import os
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -43,40 +44,28 @@ if _FRONTEND.exists():
 
 @app.on_event("startup")
 async def _warmup():
-    """
-    Pre-carga modelos en memoria al arrancar para evitar latencia en la primera request:
-    - sentence-transformers (RAG embeddings)
-    - minicpm-v en Ollama (modelo de visión, lo deja en VRAM)
-    """
     def _load_rag():
         from backend.rag.knowledge_base import retrieve_context
         retrieve_context("warmup factura billete")
 
-    def _load_ollama():
-        import ollama
-        model = os.getenv("OLLAMA_VISION_MODEL", "minicpm-v")
-        base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        try:
-            client = ollama.Client(host=base_url, timeout=60)
-            # Genera 1 token para forzar la carga del modelo en VRAM
-            client.generate(model=model, prompt="ok", options={"num_predict": 1})
-            print(f"[startup] Modelo Ollama '{model}' cargado en VRAM.")
-        except Exception as e:
-            print(f"[startup] Warmup Ollama falló (¿está corriendo?): {e}")
-
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, _load_rag)
     print("[startup] Modelo de embeddings RAG cargado en memoria.")
-    await loop.run_in_executor(None, _load_ollama)
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
+
+_STATIC_VERSION = str(int(time.time()))  # cambia en cada restart del servidor
 
 @app.get("/")
 async def root():
     index = _FRONTEND / "index.html"
     if index.exists():
-        return FileResponse(str(index))
+        html = index.read_text(encoding="utf-8")
+        html = html.replace('app.js"', f'app.js?v={_STATIC_VERSION}"')
+        html = html.replace('style.css"', f'style.css?v={_STATIC_VERSION}"')
+        return Response(content=html, media_type="text/html",
+                        headers={"Cache-Control": "no-store"})
     return {"status": "ok", "message": "Agente IA backend corriendo."}
 
 
@@ -299,6 +288,25 @@ async def get_logs(session_id: str):
     """Endpoint de observabilidad: retorna los logs de una sesión."""
     logs = get_session_logs(session_id)
     return {"session_id": session_id, "log_count": len(logs), "logs": logs}
+
+
+@app.get("/api/dolar")
+async def get_dolar():
+    """Cotización del dólar desde dolarapi.com (proxy para evitar CORS)."""
+    import urllib.request
+    import json as _json
+    def _fetch():
+        req = urllib.request.Request(
+            "https://dolarapi.com/v1/dolares",
+            headers={"User-Agent": "ACLA-Bot/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return _json.loads(r.read())
+    try:
+        data = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+        return data
+    except Exception:
+        raise HTTPException(status_code=503, detail="No se pudo obtener la cotización del dólar.")
 
 
 @app.get("/api/health")

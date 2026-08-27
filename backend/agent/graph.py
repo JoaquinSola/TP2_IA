@@ -43,19 +43,30 @@ def _is_retryable(err_str: str) -> bool:
     return any(x in err_str for x in ("503", "429", "UNAVAILABLE", "Resource has been exhausted"))
 
 
+def _config_for_fallback(config) -> "genai_types.GenerateContentConfig":
+    """Copia el config sin thinking_config — los modelos de fallback no lo soportan."""
+    kwargs = {}
+    for field in ("system_instruction", "temperature", "max_output_tokens", "top_p", "top_k"):
+        val = getattr(config, field, None)
+        if val is not None:
+            kwargs[field] = val
+    return genai_types.GenerateContentConfig(**kwargs)
+
+
 def call_gemini_with_retry(contents, config, label: str = "gemini") -> tuple:
     """
     Llama a Gemini con retry + fallback de modelo.
     Intento 1: modelo primario (2.5-flash)
     Intento 2: modelo primario con 1s de espera
-    Intento 3+: modelo de fallback (2.0-flash)
+    Intento 3+: modelo de fallback (flash-lite) — sin thinking_config
     Retorna (response, model_usado).
     """
     client = get_gemini_client()
     models_to_try = [_TEXT_MODEL, _FALLBACK_MODEL, _FALLBACK_MODEL]
     for attempt, model in enumerate(models_to_try):
+        cfg = config if attempt == 0 else _config_for_fallback(config)
         try:
-            response = client.models.generate_content(model=model, contents=contents, config=config)
+            response = client.models.generate_content(model=model, contents=contents, config=cfg)
             if attempt > 0:
                 print(f"[{label}] OK en intento {attempt+1} con {model}")
             return response, model
@@ -175,6 +186,30 @@ def agent_node(state: AgentState) -> dict:
         }
 
 
+def _due_date_alert(due_date_str: str | None) -> str:
+    """Prefijo de alerta si la factura está próxima a vencer o ya venció."""
+    if not due_date_str:
+        return ""
+    from datetime import datetime, date as _date
+    today = _date.today()
+    for fmt in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            due = datetime.strptime(due_date_str.strip(), fmt).date()
+            delta = (due - today).days
+            if delta < 0:
+                return f"Atención: esta factura venció hace {abs(delta)} día{'s' if abs(delta) != 1 else ''}. "
+            if delta == 0:
+                return "Atención: esta factura vence hoy. "
+            if delta == 1:
+                return "Atención: esta factura vence mañana. "
+            if delta <= 3:
+                return f"Atención: esta factura vence en {delta} días. "
+            return ""
+        except ValueError:
+            continue
+    return ""
+
+
 def extract_invoice_node(state: AgentState) -> dict:
     from backend.tools.invoice_extractor import extraer_datos_factura
 
@@ -186,13 +221,14 @@ def extract_invoice_node(state: AgentState) -> dict:
             image_mime=state.get("invoice_image_mime"),
         )
         summary = format_invoice_summary(invoice)
-        response_msg = summary
+        alert = _due_date_alert(invoice.due_date)
+        response_msg = alert + summary
 
         if not invoice.is_valid_document:
             response_msg = invoice.error_message or "No pude procesar la factura."
         elif invoice.second_due_date and invoice.second_amount:
             response_msg = (
-                f"{summary}. "
+                f"{alert}{summary}. "
                 f"También hay un segundo vencimiento el {invoice.second_due_date} "
                 f"por {_fmt_ars(invoice.second_amount)} pesos. "
                 f"¿Con qué monto querés continuar?"
@@ -207,7 +243,7 @@ def extract_invoice_node(state: AgentState) -> dict:
             }
 
         if invoice.is_valid_document and invoice.total_amount:
-            response_msg += " Cuando tengas los billetes listos, sacá una foto de ellos sobre la mesa."
+            response_msg += " Si tenés billetes para pagar, avisame."
 
         return {
             "invoice_data": invoice.model_dump(),

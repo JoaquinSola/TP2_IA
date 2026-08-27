@@ -69,7 +69,7 @@ def _prepare_image(image_bytes: bytes) -> tuple[bytes, str]:
         img = ImageOps.exif_transpose(img)
         if img.mode in ('RGBA', 'P', 'LA'):
             img = img.convert('RGB')
-        max_dim = 1920
+        max_dim = 1280
         if max(img.size) > max_dim:
             ratio = max_dim / max(img.size)
             img = img.resize((int(img.size[0] * ratio), int(img.size[1] * ratio)), Image.LANCZOS)
