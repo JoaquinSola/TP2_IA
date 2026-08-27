@@ -396,6 +396,31 @@ async def mp_balance(request: Request):
     return {"user": user_data, "balance_unavailable": True}
 
 
+@app.get("/api/mp/payment/{payment_id}")
+async def mp_payment_detail(payment_id: str, request: Request):
+    """Retorna el detalle completo de un pago MP por ID."""
+    token = request.headers.get("X-MP-Token", "")
+    if not token:
+        raise HTTPException(status_code=401, detail="Token MP no provisto.")
+
+    import urllib.request, json as _json
+
+    req = urllib.request.Request(
+        f"https://api.mercadopago.com/v1/payments/{payment_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        loop = asyncio.get_event_loop()
+        def _fetch():
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return _json.loads(r.read())
+        data = await loop.run_in_executor(None, _fetch)
+        return data
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        raise HTTPException(status_code=e.code, detail=f"MP payment error: {body}")
+
+
 @app.get("/api/mp/movements")
 async def mp_movements(request: Request):
     """Retorna los últimos movimientos de pagos MP del usuario."""

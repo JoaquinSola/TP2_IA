@@ -396,7 +396,11 @@ const MP_WORDS = [
   /últimas?\s+transacciones?/i,
   /últimos?\s+movimientos?/i,
   /conectar\s+(mi\s+)?(billetera|cuenta)/i,
+  /detalle\s+(del?\s+)?(pago|transacci[oó]n|movimiento)/i,
+  /\b(primer|segundo|tercer|cuarto|quinto|1|2|3|4|5)[oa]?\s+(pago|transacci[oó]n|movimiento)\b/i,
 ];
+
+let _lastMpPayments = [];
 
 async function handleAddBillsCommand(transcript) {
   if (transcript) addMessage('user', transcript);
@@ -521,6 +525,36 @@ function openMpOAuth() {
   });
 }
 
+async function handleMpPaymentDetail(paymentId) {
+  setFaceState('processing');
+  try {
+    const res = await fetch(`${API_BASE}/api/mp/payment/${paymentId}`, { headers: _mpHeaders() });
+    if (res.status === 401) { clearMpToken(); throw new Error('token_expired'); }
+    const p = await res.json();
+    if (!res.ok) throw new Error(p.detail || 'detail_error');
+
+    const monto   = _fmtVoice(Math.abs(p.transaction_amount ?? 0));
+    const fecha   = p.date_approved ? new Date(p.date_approved).toLocaleDateString('es-AR', { day: 'numeric', month: 'long', year: 'numeric' }) : 'fecha desconocida';
+    const desc    = p.description || 'sin descripción';
+    const metodo  = p.payment_type_id === 'account_money' ? 'dinero en cuenta'
+                  : p.payment_type_id === 'debit_card'    ? 'tarjeta de débito'
+                  : p.payment_type_id === 'credit_card'   ? 'tarjeta de crédito'
+                  : p.payment_method_id || p.payment_type_id || 'método desconocido';
+    const cuotas  = (p.installments && p.installments > 1) ? ` en ${p.installments} cuotas` : '';
+    const estado  = p.status === 'approved' ? 'aprobado' : p.status;
+    const pagador = p.payer?.email ? ` — pagador: ${p.payer.email}` : '';
+
+    const msg = `Detalle del pago: ${monto} pesos${cuotas} el ${fecha}. Descripción: ${desc}. Método: ${metodo}. Estado: ${estado}${pagador}.`;
+    addMessage('assistant', msg); setFaceState('idle'); await speak(msg);
+  } catch (e) {
+    setFaceState('idle');
+    const msg = e.message === 'token_expired'
+      ? 'Tu sesión de MercadoPago expiró. Tocá el botón para volver a conectar.'
+      : `No pude obtener el detalle del pago: ${e.message}`;
+    addMessage('assistant', msg); await speak(msg);
+  }
+}
+
 async function handleMpCommand(transcript) {
   if (transcript) addMessage('user', transcript);
   const lower = transcript.toLowerCase();
@@ -534,27 +568,43 @@ async function handleMpCommand(transcript) {
     return;
   }
 
-  // Detectar si pide movimientos o saldo
+  // Detectar intención
   const wantsMovements = /movimientos?|transacciones?/i.test(lower);
+  const wantsDetail    = /detalle|primer[oa]?|segundo[a]?|tercer[oa]?|cuarto[a]?|quinto[a]?/i.test(lower);
+
+  // Extraer número de pago pedido (1-5 o ordinal)
+  const ordinalMap = { primer: 1, primero: 1, primera: 1, '1': 1, segundo: 2, segunda: 2, '2': 2, tercer: 3, tercero: 3, tercera: 3, '3': 3, cuarto: 4, cuarta: 4, '4': 4, quinto: 5, quinta: 5, '5': 5 };
+  function _extractOrdinal(text) {
+    const m = text.match(/\b(primer[oa]?|segundo[a]?|tercer[oa]?|cuarto[a]?|quinto[a]?|[1-5])\b/i);
+    return m ? (ordinalMap[m[1].toLowerCase()] ?? null) : null;
+  }
 
   setFaceState('processing');
   try {
-    if (wantsMovements) {
+    if (wantsDetail && _lastMpPayments.length) {
+      const idx = (_extractOrdinal(lower) ?? 1) - 1;
+      const pago = _lastMpPayments[Math.min(idx, _lastMpPayments.length - 1)];
+      await handleMpPaymentDetail(pago.id);
+      return;
+    }
+    if (wantsMovements || wantsDetail) {
       const res = await fetch(`${API_BASE}/api/mp/movements`, { headers: _mpHeaders() });
       if (res.status === 401) { clearMpToken(); throw new Error('token_expired'); }
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'movements_error');
-      const items = (data.results || []).filter(p => p.status === 'approved');
+      const items = (data.results || []).filter(p => p.status === 'approved').slice(0, 5);
+      _lastMpPayments = items;
       if (!items.length) {
         const msg = 'No encontré pagos recientes en tu cuenta.';
         addMessage('assistant', msg); setFaceState('idle'); await speak(msg);
       } else {
-        const lines = items.slice(0, 5).map(p => {
+        const ordNames = ['primero', 'segundo', 'tercero', 'cuarto', 'quinto'];
+        const lines = items.map((p, i) => {
           const monto = _fmtVoice(Math.abs(p.transaction_amount ?? p.amount ?? 0));
           const desc  = p.description || p.payment_method_id || 'pago';
-          return `${monto} pesos — ${desc}`;
+          return `${ordNames[i]}: ${monto} pesos — ${desc}`;
         });
-        const msg = `Tus últimos pagos: ${lines.join('. ')}.`;
+        const msg = `Tus últimos pagos: ${lines.join('. ')}. Podés pedirme el detalle de cualquiera diciendo, por ejemplo, "detalle del primero".`;
         addMessage('assistant', msg); setFaceState('idle'); await speak(msg);
       }
     } else {
