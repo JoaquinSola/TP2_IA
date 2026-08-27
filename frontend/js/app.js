@@ -542,36 +542,46 @@ async function handleMpCommand(transcript) {
     if (wantsMovements) {
       const res = await fetch(`${API_BASE}/api/mp/movements`, { headers: _mpHeaders() });
       if (res.status === 401) { clearMpToken(); throw new Error('token_expired'); }
-      if (!res.ok) throw new Error();
       const data = await res.json();
-      const items = data.results || [];
+      if (!res.ok) throw new Error(data.detail || 'movements_error');
+      const items = (data.results || []).filter(p => p.status === 'approved');
       if (!items.length) {
-        const msg = 'No encontré movimientos recientes en tu cuenta.';
+        const msg = 'No encontré pagos recientes en tu cuenta.';
         addMessage('assistant', msg); setFaceState('idle'); await speak(msg);
       } else {
-        const lines = items.slice(0, 5).map(m => {
-          const signo = m.amount < 0 ? 'Salida de' : 'Entrada de';
-          const monto = _fmtVoice(Math.abs(m.amount));
-          const desc  = m.description || m.type || '';
-          return `${signo} ${monto} pesos: ${desc}`;
+        const lines = items.slice(0, 5).map(p => {
+          const monto = _fmtVoice(Math.abs(p.transaction_amount ?? p.amount ?? 0));
+          const desc  = p.description || p.payment_method_id || 'pago';
+          return `${monto} pesos — ${desc}`;
         });
-        const msg = `Tus últimos movimientos: ${lines.join('. ')}.`;
+        const msg = `Tus últimos pagos: ${lines.join('. ')}.`;
         addMessage('assistant', msg); setFaceState('idle'); await speak(msg);
       }
     } else {
       const res = await fetch(`${API_BASE}/api/mp/balance`, { headers: _mpHeaders() });
       if (res.status === 401) { clearMpToken(); throw new Error('token_expired'); }
-      if (!res.ok) throw new Error();
       const data = await res.json();
-      const disponible = data.available_balance ?? data.total_amount ?? 0;
-      const msg = `Tu saldo disponible en MercadoPago es de ${_fmtVoice(disponible)} pesos.`;
-      addMessage('assistant', msg); setFaceState('idle'); await speak(msg);
+      if (!res.ok) throw new Error(data.detail || 'balance_error');
+      console.log('[MP balance raw]', JSON.stringify(data));
+      if (data.balance_error) {
+        // El token funciona pero el endpoint de saldo no está disponible — informar
+        const nombre = data.user?.first_name || 'vos';
+        const msg = `Conectado como ${nombre}, pero no pude obtener el saldo numérico: ${data.balance_error}`;
+        addMessage('assistant', msg); setFaceState('idle'); await speak(msg);
+      } else {
+        const bal = data.balance || {};
+        const disponible = bal.available_balance ?? bal.total_amount ?? 0;
+        const nombre = data.user?.first_name ? ` (${data.user.first_name})` : '';
+        const msg = `Tu saldo disponible en MercadoPago${nombre} es de ${_fmtVoice(disponible)} pesos.`;
+        addMessage('assistant', msg); setFaceState('idle'); await speak(msg);
+      }
     }
   } catch (e) {
     setFaceState('idle');
+    console.error('[MP error]', e.message);
     const msg = e.message === 'token_expired'
       ? 'Tu sesión de MercadoPago expiró. Tocá el botón para volver a conectar.'
-      : 'No pude consultar MercadoPago en este momento. Verificá tu conexión.';
+      : `No pude consultar MercadoPago: ${e.message}`;
     addMessage('assistant', msg); await speak(msg);
   }
   if (conversationMode) triggerListenWithCue();

@@ -326,15 +326,17 @@ async def mp_auth():
 @app.get("/api/mp/callback")
 async def mp_callback(code: str = None, error: str = None):
     """Recibe el code de MP, lo intercambia por token y lo pasa al frontend via postMessage."""
-    close_with = lambda payload: HTMLResponse(
-        f"<script>window.opener&&window.opener.postMessage({payload},'*');window.close();</script>"
-        "<p>Podés cerrar esta ventana.</p>"
-    )
+    import urllib.request, urllib.parse, json as _json
+
+    def _postmsg_page(payload_dict: dict) -> HTMLResponse:
+        payload_json = _json.dumps(payload_dict)
+        return HTMLResponse(
+            f"<script>window.opener&&window.opener.postMessage({payload_json},'*');window.close();</script>"
+            "<p>Podés cerrar esta ventana.</p>"
+        )
 
     if error or not code:
-        return close_with("{'mp_error':'cancelled'}")
-
-    import urllib.request, urllib.parse, json as _json
+        return _postmsg_page({"mp_error": "cancelled"})
 
     def _exchange():
         data = urllib.parse.urlencode({
@@ -355,58 +357,77 @@ async def mp_callback(code: str = None, error: str = None):
 
     try:
         token_data = await asyncio.get_event_loop().run_in_executor(None, _exchange)
-        token   = token_data.get("access_token", "")
-        user_id = str(token_data.get("user_id", ""))
-        return close_with(f"{{'mp_token':'{token}','mp_user_id':'{user_id}'}}")
-    except Exception:
-        return close_with("{'mp_error':'failed'}")
+        return _postmsg_page({
+            "mp_token":   token_data.get("access_token", ""),
+            "mp_user_id": str(token_data.get("user_id", "")),
+        })
+    except Exception as e:
+        return _postmsg_page({"mp_error": f"failed: {e}"})
 
 
 @app.get("/api/mp/balance")
 async def mp_balance(request: Request):
-    """Consulta el saldo de la cuenta MP del usuario."""
+    """Consulta saldo y datos del usuario MP."""
     token = request.headers.get("X-MP-Token", "")
     if not token:
         raise HTTPException(status_code=401, detail="Token MP no provisto.")
 
     import urllib.request, json as _json
 
-    def _fetch():
-        req = urllib.request.Request(
-            "https://api.mercadopago.com/v1/account/balance",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return _json.loads(r.read())
+    def _fetch(url: str):
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return _json.loads(r.read()), None
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")
+            return None, f"HTTP {e.code}: {body}"
 
-    try:
-        return await asyncio.get_event_loop().run_in_executor(None, _fetch)
-    except Exception:
-        raise HTTPException(status_code=503, detail="No se pudo obtener el saldo de MercadoPago.")
+    loop = asyncio.get_event_loop()
+
+    user_data, user_err = await loop.run_in_executor(
+        None, _fetch, "https://api.mercadopago.com/users/me"
+    )
+    if user_err:
+        raise HTTPException(status_code=503, detail=f"MP /users/me error: {user_err}")
+
+    balance_data, bal_err = await loop.run_in_executor(
+        None, _fetch, "https://api.mercadopago.com/v1/account/balance"
+    )
+    if bal_err:
+        return {"user": user_data, "balance_error": bal_err}
+
+    return {"user": user_data, "balance": balance_data}
 
 
 @app.get("/api/mp/movements")
 async def mp_movements(request: Request):
-    """Retorna los últimos 5 movimientos de la cuenta MP del usuario."""
+    """Retorna los últimos movimientos de pagos MP del usuario."""
     token = request.headers.get("X-MP-Token", "")
     if not token:
         raise HTTPException(status_code=401, detail="Token MP no provisto.")
 
     import urllib.request, json as _json
 
-    def _fetch():
-        req = urllib.request.Request(
-            "https://api.mercadopago.com/v1/account/movements/search"
-            "?limit=5&sort=date_created&criteria=desc",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return _json.loads(r.read())
+    def _fetch(url: str):
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return _json.loads(r.read()), None
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")
+            return None, f"HTTP {e.code}: {body}"
 
-    try:
-        return await asyncio.get_event_loop().run_in_executor(None, _fetch)
-    except Exception:
-        raise HTTPException(status_code=503, detail="No se pudo obtener los movimientos de MercadoPago.")
+    loop = asyncio.get_event_loop()
+    data, err = await loop.run_in_executor(
+        None, _fetch,
+        "https://api.mercadopago.com/v1/payments/search"
+        "?sort=date_created&criteria=desc&range=date_created"
+        "&begin_date=NOW-1MONTHS&end_date=NOW&limit=5",
+    )
+    if err:
+        raise HTTPException(status_code=503, detail=f"MP movements error: {err}")
+    return data
 
 
 @app.get("/api/health")
