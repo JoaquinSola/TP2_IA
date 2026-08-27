@@ -1,3 +1,38 @@
+/* ─── Debug panel visual (intercepta console.log/warn/error) ────────────── */
+(function () {
+  const panel   = document.getElementById('debug-panel');
+  const log     = document.getElementById('debug-log');
+  const toggle  = document.getElementById('debug-toggle');
+  const btnClear = document.getElementById('debug-clear');
+  const btnClose = document.getElementById('debug-close');
+
+  function addEntry(level, args) {
+    const line = args.map(a => {
+      try { return typeof a === 'object' ? JSON.stringify(a) : String(a); } catch { return String(a); }
+    }).join(' ');
+    const el = document.createElement('div');
+    el.className = `debug-entry ${level}`;
+    el.textContent = `[${new Date().toLocaleTimeString('es-AR', { hour12: false })}] ${line}`;
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  const _log   = console.log.bind(console);
+  const _warn  = console.warn.bind(console);
+  const _error = console.error.bind(console);
+
+  console.log   = (...a) => { _log(...a);   addEntry('log',   a); };
+  console.warn  = (...a) => { _warn(...a);  addEntry('warn',  a); };
+  console.error = (...a) => { _error(...a); addEntry('error', a); };
+
+  window.addEventListener('error', (e) => addEntry('error', [`Uncaught: ${e.message} (${e.filename}:${e.lineno})`]));
+  window.addEventListener('unhandledrejection', (e) => addEntry('error', [`Unhandled promise: ${e.reason}`]));
+
+  toggle.addEventListener('click', () => panel.classList.toggle('hidden'));
+  btnClose.addEventListener('click', () => panel.classList.add('hidden'));
+  btnClear.addEventListener('click', () => { log.innerHTML = ''; });
+})();
+
 /* ─── Estado de la app ───────────────────────────────────────────────────── */
 const state = {
   sessionId: null,
@@ -11,6 +46,7 @@ const state = {
 
 let conversationMode = false;
 let isSpeaking = false; // true mientras el bot reproduce audio — bloquea el mic
+let _lastBotResponse = '';
 
 const API_BASE = window.location.origin;
 
@@ -49,6 +85,75 @@ const btnCaptureInvoiceMobile = document.getElementById('btn-capture-invoice-mob
 const btnCaptureBillsMobile   = document.getElementById('btn-capture-bills-mobile');
 const cameraChoiceMobile      = document.getElementById('camera-choice-mobile');
 const cameraControlsDesktop   = document.getElementById('camera-controls-desktop');
+
+/* ─── Cara animada ──────────────────────────────────────────────────────── */
+const faceEl     = document.getElementById('bot-face');
+const faceStatus = document.getElementById('face-status');
+let _faceText = 'Listo';
+
+function setFaceState(st, text) {
+  if (faceEl) faceEl.className = st;
+  if (faceStatus) {
+    if (text) _faceText = text.length > 80 ? text.slice(0, 77) + '...' : text;
+    faceStatus.textContent =
+      st === 'listening'  ? 'Escuchando...' :
+      st === 'processing' ? 'Procesando...' :
+      _faceText;
+  }
+}
+
+/* ─── Lip sync via AnalyserNode ─────────────────────────────────────────── */
+let _analyser = null;
+let _mouthAnimFrame = null;
+
+function getAnalyser() {
+  if (!_analyser) {
+    const ctx = _getAudioContext();
+    _analyser = ctx.createAnalyser();
+    _analyser.fftSize = 256;
+    _analyser.smoothingTimeConstant = 0.65;
+  }
+  return _analyser;
+}
+
+function setMouthOpening(t) { // t: 0 (cerrada) a 1 (abierta)
+  const bar = document.getElementById('mouth-bar');
+  if (!bar) return;
+  const CENTER_Y = 223, MIN_H = 5, MAX_H = 52;
+  const h = MIN_H + (MAX_H - MIN_H) * t;
+  bar.setAttribute('height', h);
+  bar.setAttribute('y', CENTER_Y - h / 2);
+}
+
+function startMouthAnimation(analyser) {
+  stopMouthAnimation();
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  function frame() {
+    analyser.getByteTimeDomainData(data);
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
+    setMouthOpening(Math.min(1, Math.sqrt(sum / data.length) * 6));
+    _mouthAnimFrame = requestAnimationFrame(frame);
+  }
+  _mouthAnimFrame = requestAnimationFrame(frame);
+}
+
+function stopMouthAnimation() {
+  if (_mouthAnimFrame) { cancelAnimationFrame(_mouthAnimFrame); _mouthAnimFrame = null; }
+  setMouthOpening(0);
+}
+
+/* ─── Parpadeo aleatorio ────────────────────────────────────────────────── */
+function scheduleBlink() {
+  setTimeout(() => {
+    document.querySelectorAll('.eye-screen').forEach(el => el.setAttribute('fill', '#0d0d20'));
+    setTimeout(() => {
+      document.querySelectorAll('.eye-screen').forEach(el => el.setAttribute('fill', '#000a1e'));
+      scheduleBlink();
+    }, 130);
+  }, 3000 + Math.random() * 5000);
+}
+scheduleBlink();
 
 /* ═══════════════════════════════════════════════════════════════════════════
    TTS — Web Audio API (funciona en iOS/Android después de operaciones async)
@@ -130,6 +235,7 @@ async function speakProcessing() {
 async function speak(text) {
   if (!text) return;
   isSpeaking = true;
+  setFaceState('speaking', text);
   stopListening();       // Cerrar mic antes de hablar
   stopProcessingAudio(); // Cancelar "Procesando..." si todavía corre
 
@@ -144,8 +250,14 @@ async function speak(text) {
       const voices = speechSynthesis.getVoices();
       const esVoice = voices.find(v => v.lang.startsWith('es'));
       if (esVoice) utt.voice = esVoice;
-      utt.onend = () => { isSpeaking = false; resolve(); };
-      utt.onerror = () => { isSpeaking = false; resolve(); };
+      utt.onboundary = (e) => {
+        if (e.name === 'word') {
+          setMouthOpening(0.35 + Math.random() * 0.55);
+          setTimeout(() => setMouthOpening(0.05), 100 + Math.random() * 80);
+        }
+      };
+      utt.onend = () => { setMouthOpening(0); isSpeaking = false; setFaceState('idle'); resolve(); };
+      utt.onerror = () => { setMouthOpening(0); isSpeaking = false; setFaceState('idle'); resolve(); };
       speechSynthesis.speak(utt);
     });
     return;
@@ -159,7 +271,7 @@ async function speak(text) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: text.substring(0, 800) }),
     });
-    if (!res.ok) { isSpeaking = false; return; }
+    if (!res.ok) { isSpeaking = false; setFaceState('idle'); return; }
     const arrayBuffer = await res.arrayBuffer();
     const ctx = _getAudioContext();
     if (ctx.state === 'suspended') await ctx.resume();
@@ -169,13 +281,24 @@ async function speak(text) {
       _audioSource = ctx.createBufferSource();
       _audioSource.buffer = audioBuffer;
       _audioSource.playbackRate.value = 1.15;
-      _audioSource.connect(ctx.destination);
-      _audioSource.onended = () => { _audioSource = null; isSpeaking = false; resolve(); };
+      const analyser = getAnalyser();
+      _audioSource.connect(analyser);
+      analyser.connect(ctx.destination);
+      startMouthAnimation(analyser);
+      _audioSource.onended = () => {
+        stopMouthAnimation();
+        _audioSource = null;
+        isSpeaking = false;
+        setFaceState('idle');
+        resolve();
+      };
       _audioSource.start(0);
     });
   } catch (err) {
     console.warn('TTS error:', err);
+    stopMouthAnimation();
     isSpeaking = false;
+    setFaceState('idle');
   }
 }
 
@@ -206,13 +329,46 @@ const ADD_BILLS_WORDS = [
   /tengo\s+m[aá]s/i,
 ];
 
-// Comandos para consultar cotización del dólar (siempre activos)
-const DOLAR_WORDS = [
+// Comandos de repetición y ayuda
+const REPEAT_WORDS = [
+  /repet[ií](me)?(\s+eso)?/i,
+  /\¿?qu[eé]\s+dijiste\??/i,
+  /no\s+(te?\s+)?escuch[eé]/i,
+  /no\s+entend[ií]/i,
+  /pod[eé]s\s+repetir/i,
+  /otra\s+vez(\s+por\s+favor)?/i,
+];
+
+const DOLLAR_WORDS = [
   /d[oó]lar/i,
   /cotizaci[oó]n/i,
-  /cambio.*d[oó]lar/i,
-  /blue/i,
-  /mep\b/i,
+  /tipo\s+de\s+cambio/i,
+  /\bblue\b/i,
+  /cu[aá]nto\s+(vale|est[aá]|cuesta)\s+(el\s+)?d[oó]lar/i,
+];
+
+const CALC_WORDS = [
+  /\bsomos\s+(\d+|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)/i,
+  /\bdivid(?:í|ir|imos|amos)\b/i,          // dividí, dividir, dividimos, dividamos
+  /\breparti(?:r|mos|d)\b/i,               // repartir, repartimos, repartid
+  /\bpropina\b/i,
+  /\d+\s*%/,
+  /\bpor\s+ciento\b/i,
+  /\bcuotas?\b/i,
+  /cu[aá]nto\s+(paga|toca|corresponde|cobra)\s+(cada|por\s+persona)/i,
+  /\bcalcul[aá]/i,                          // calculá, calcular
+  /entre\s+(\d+|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\s*(personas?)?/i,
+];
+
+const HELP_WORDS = [
+  /c[oó]mo\s+funcio(n[aá]s?|na)/i,
+  /c[oó]mo\s+(te\s+)?(us[ao]|util[ií]z)/i,
+  /qu[eé]\s+pod[eé]s\s+(hacer|hac[eé]r)/i,
+  /qu[eé]\s+sab[eé]s\s+(hacer|hac[eé]r)/i,
+  /qu[eé]\s+(son\s+)?tus\s+funciones/i,
+  /explic[aá](me)?(\s+c[oó]mo)?/i,
+  /instrucciones/i,
+  /para\s+qu[eé]\s+sirv[eé]s/i,
 ];
 
 // Comandos para reiniciar la transacción (siempre activos)
@@ -238,33 +394,169 @@ async function handleAddBillsCommand(transcript) {
   showVoiceCameraOverlay('bills', 'billetes adicionales');
 }
 
-async function handleDolarCommand(transcript) {
+async function handleRepeatCommand(transcript) {
   if (transcript) addMessage('user', transcript);
-  setLoading(true);
+  if (_lastBotResponse) {
+    await speak(_lastBotResponse);
+  } else {
+    const msg = 'No tengo nada para repetir todavía.';
+    addMessage('assistant', msg);
+    await speak(msg);
+  }
+  if (conversationMode) triggerListenWithCue();
+}
+
+async function handleHelpCommand(transcript) {
+  if (transcript) addMessage('user', transcript);
+  const msg = 'Puedo hacer tres cosas: leer facturas y decirte cuánto debés y cuándo vence, identificar los billetes que tenés y cuánto suman, y calcular si te alcanza el dinero y cuánto vuelto esperás. Mandame una foto de tu factura o tus billetes, o decime qué necesitás.';
+  addMessage('assistant', msg);
+  await speak(msg);
+  if (conversationMode) triggerListenWithCue();
+}
+
+/* ─── Helpers de cálculo ────────────────────────────────────────────────── */
+const _NUM_WORDS = {
+  'uno':1,'una':1,'dos':2,'tres':3,'cuatro':4,'cinco':5,
+  'seis':6,'siete':7,'ocho':8,'nueve':9,'diez':10,
+  'once':11,'doce':12,'trece':13,'catorce':14,'quince':15,
+  'veinte':20,
+};
+function _parseNum(s) {
+  if (!s) return null;
+  const w = _NUM_WORDS[s.toLowerCase()];
+  if (w !== undefined) return w;
+  const n = parseFloat(s.replace(/\./g, '').replace(',', '.'));
+  return isNaN(n) ? null : n;
+}
+const _fmtVoice = (n) => Number(Math.round(n)).toLocaleString('es-AR');
+
+/* ─── Feature: cotización del dólar ─────────────────────────────────────── */
+async function handleDollarCommand(transcript) {
+  if (transcript) addMessage('user', transcript);
+  setFaceState('processing');
   try {
     const res = await fetch(`${API_BASE}/api/dolar`);
     if (!res.ok) throw new Error();
     const data = await res.json();
-    const fmtPesos = (n) => Math.round(Number(n)).toLocaleString('es-AR');
     const oficial = data.find(d => d.casa === 'oficial');
     const blue    = data.find(d => d.casa === 'blue');
     const bolsa   = data.find(d => d.casa === 'bolsa');
     const parts = [];
-    if (oficial) parts.push(`el oficial a ${fmtPesos(oficial.venta)} pesos`);
-    if (blue)    parts.push(`el blue a ${fmtPesos(blue.venta)} pesos`);
-    if (bolsa)   parts.push(`el MEP a ${fmtPesos(bolsa.venta)} pesos`);
+    if (oficial) parts.push(`el oficial a ${_fmtVoice(oficial.venta)} pesos`);
+    if (blue)    parts.push(`el blue a ${_fmtVoice(blue.venta)} pesos`);
+    if (bolsa)   parts.push(`el MEP a ${_fmtVoice(bolsa.venta)} pesos`);
     if (!parts.length) throw new Error();
     const msg = `El dólar hoy: ${parts.join(', ')}.`;
     addMessage('assistant', msg);
-    setLoading(false);
+    setFaceState('idle');
     await speak(msg);
   } catch {
-    setLoading(false);
+    setFaceState('idle');
     const msg = 'No pude obtener la cotización en este momento. Verificá tu conexión e intentá de nuevo.';
     addMessage('assistant', msg);
     await speak(msg);
   }
   if (conversationMode) triggerListenWithCue();
+}
+
+/* ─── Feature: calculadora cotidiana ───────────────────────────────────── */
+async function handleCalcCommand(transcript) {
+  if (transcript) addMessage('user', transcript);
+  const t = transcript.toLowerCase();
+  let msg = null;
+
+  // ── División / reparto ───────────────────────────────────────────────────
+  // Intenta resolver N personas desde ambos patrones antes de rendirse
+  const peopleM  = t.match(/somos\s+(\w+)/);
+  const betweenM = t.match(/(?:entre|para|dividido\s+(?:por|entre))\s+(\w+)(?:\s+personas?)?/);
+  const amtM     = t.match(/(\d[\d.,]*)\s*pesos?/);  // más permisivo que antes
+
+  let n = null;
+  if (peopleM)        n = _parseNum(peopleM[1]);
+  if (!n && betweenM) n = _parseNum(betweenM[1]);
+
+  if (n && n >= 2 && amtM) {
+    const amt = _parseNum(amtM[1]);
+    if (amt)
+      msg = `${_fmtVoice(amt)} pesos entre ${n} personas: ${_fmtVoice(Math.ceil(amt / n))} pesos cada una.`;
+  }
+
+  // ── Porcentaje / propina ─────────────────────────────────────────────────
+  // Acepta "%" o "por ciento", y "de" o "sobre" (o ninguno) entre % y el monto
+  if (!msg) {
+    const pctM = t.match(/(\d+(?:[.,]\d+)?)\s*(?:%|por\s+ciento)\s+(?:de|sobre)?\s*(\d[\d.,]*)/);
+    if (pctM) {
+      const p = parseFloat(pctM[1].replace(',', '.')), base = _parseNum(pctM[2]);
+      if (!isNaN(p) && base) {
+        const result = Math.round(base * p / 100);
+        msg = `El ${p}% de ${_fmtVoice(base)} pesos son ${_fmtVoice(result)} pesos.`;
+        if (/propina|total|con\s+propina/.test(t))
+          msg += ` Total con propina: ${_fmtVoice(base + result)} pesos.`;
+      }
+    }
+  }
+
+  // ── Cuotas ───────────────────────────────────────────────────────────────
+  // Acepta "50.000 pesos en 12 cuotas" Y también "12 cuotas de 50.000 pesos"
+  if (!msg) {
+    const q1 = t.match(/(\d[\d.,]*)\s*pesos?\s+en\s+(\d+)\s+cuotas?/);
+    const q2 = t.match(/(\d+)\s+cuotas?\s+(?:de\s+)?(\d[\d.,]*)\s*pesos?/);
+    let total = null, cuotas = null;
+    if (q1)      { total = _parseNum(q1[1]); cuotas = parseInt(q1[2]); }
+    else if (q2) { cuotas = parseInt(q2[1]); total  = _parseNum(q2[2]); }
+    if (total && cuotas && cuotas >= 2)
+      msg = `${_fmtVoice(total)} pesos en ${cuotas} cuotas: ${_fmtVoice(Math.ceil(total / cuotas))} pesos por cuota.`;
+  }
+
+  if (!msg)
+    msg = 'No entendí el cálculo. Podés decirme: "somos 4, la cuenta es 12.000 pesos", "el 15% de 8.000 pesos", o "50.000 pesos en 12 cuotas".';
+  addMessage('assistant', msg);
+  await speak(msg);
+  if (conversationMode) triggerListenWithCue();
+}
+
+/* ─── Feature: recordatorio de vencimientos (localStorage) ─────────────── */
+const _STORAGE_INVOICES = 'acla_invoices';
+
+function _parseDueDateFE(str) {
+  if (!str) return null;
+  let m;
+  if ((m = str.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)))
+    return new Date(+m[3], +m[2] - 1, +m[1]);
+  if ((m = str.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/)))
+    return new Date(2000 + +m[3], +m[2] - 1, +m[1]);
+  if ((m = str.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/)))
+    return new Date(+m[1], +m[2] - 1, +m[3]);
+  return null;
+}
+
+function saveInvoiceToStorage(inv) {
+  if (!inv?.due_date) return;
+  const entries = JSON.parse(localStorage.getItem(_STORAGE_INVOICES) || '[]');
+  const key = `${inv.entity || 'desconocida'}_${inv.due_date}`;
+  const filtered = entries.filter(e => `${e.entity || 'desconocida'}_${e.due_date}` !== key);
+  filtered.push({ entity: inv.entity || 'un servicio', amount: inv.total_amount, due_date: inv.due_date });
+  localStorage.setItem(_STORAGE_INVOICES, JSON.stringify(filtered.slice(-30)));
+}
+
+function checkDueReminders() {
+  const entries = JSON.parse(localStorage.getItem(_STORAGE_INVOICES) || '[]');
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const reminders = [];
+  for (const inv of entries) {
+    const due = _parseDueDateFE(inv.due_date);
+    if (!due) continue;
+    due.setHours(0, 0, 0, 0);
+    const delta = Math.round((due - today) / 86400000);
+    if (delta < -7 || delta > 3) continue;
+    const when = delta < 0
+      ? `venció hace ${Math.abs(delta)} día${Math.abs(delta) !== 1 ? 's' : ''}`
+      : delta === 0 ? 'vence hoy'
+      : delta === 1 ? 'vence mañana'
+      : `vence en ${delta} días`;
+    reminders.push({ label: `La factura de ${inv.entity} ${when}`, delta });
+  }
+  return reminders.sort((a, b) => a.delta - b.delta);
 }
 
 async function handleResetCommand(transcript) {
@@ -303,6 +595,25 @@ function initSpeechRecognition() {
     // Descartar si el bot todavía está hablando (captura accidental de audio ambiente o eco TTS)
     if (isSpeaking) return;
 
+    // Interceptor de facturas digitales: tiene prioridad mientras el overlay esté activo
+    if (_digitalInvoiceCallback) {
+      const cb = _digitalInvoiceCallback;
+      _digitalInvoiceCallback = null;
+      cb(transcript);
+      return;
+    }
+
+    // Comando de voz para abrir facturas digitales
+    if (matchVoiceCmd(lower, DIGITAL_INVOICE_WORDS)) {
+      addMessage('user', transcript);
+      if (_cachedDirHandle) {
+        openDigitalInvoicesFlow(); // permisos ya dados → ir directo
+      } else {
+        showDigitalVoiceOverlay(); // primera vez sin permisos → overlay con tap
+      }
+      return;
+    }
+
     // Comando "agregar billetes" (solo cuando el último cálculo indicó fondos insuficientes)
     if (state.lastPaymentInsufficient && matchVoiceCmd(lower, ADD_BILLS_WORDS)) {
       handleAddBillsCommand(transcript);
@@ -315,11 +626,11 @@ function initSpeechRecognition() {
       return;
     }
 
-    // Consulta de cotización del dólar (siempre activo)
-    if (matchVoiceCmd(lower, DOLAR_WORDS)) {
-      handleDolarCommand(transcript);
-      return;
-    }
+    // Repetición, ayuda, dólar y calculadora (siempre activos)
+    if (matchVoiceCmd(lower, REPEAT_WORDS)) { handleRepeatCommand(transcript); return; }
+    if (matchVoiceCmd(lower, HELP_WORDS))   { handleHelpCommand(transcript);   return; }
+    if (matchVoiceCmd(lower, DOLLAR_WORDS)) { handleDollarCommand(transcript); return; }
+    if (matchVoiceCmd(lower, CALC_WORDS))   { handleCalcCommand(transcript);   return; }
 
     // Comandos de cámara por voz
     // El browser bloquea file input .click() desde SpeechRecognition (no es gesto de usuario).
@@ -358,6 +669,7 @@ function startListening() {
     }
   };
   state.isListening = true;
+  setFaceState('listening');
   btnMic.classList.add('active');
   btnMic.setAttribute('aria-pressed', 'true');
   try {
@@ -370,6 +682,7 @@ function startListening() {
 
 function stopListening() {
   state.isListening = false;
+  if (!isSpeaking) setFaceState('idle');
   btnMic.classList.remove('active');
   btnMic.setAttribute('aria-pressed', 'false');
   if (state.recognition) { try { state.recognition.stop(); } catch (_) {} }
@@ -513,12 +826,58 @@ function setPendingImage(base64, mime, purpose, dataUrl) {
   textInput.focus();
 }
 
+function _resizeImage(dataUrl, maxPx = 1280, quality = 0.82) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const longest = Math.max(img.width, img.height);
+      if (longest <= maxPx) { resolve(dataUrl); return; }
+      const scale = maxPx / longest;
+      const canvas = document.createElement('canvas');
+      canvas.width  = Math.round(img.width  * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+function _checkImageBrightness(dataUrl) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const W = 80, H = 80;
+      const c = document.createElement('canvas');
+      c.width = W; c.height = H;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0, W, H);
+      const d = ctx.getImageData(0, 0, W, H).data;
+      let sum = 0;
+      for (let i = 0; i < d.length; i += 4)
+        sum += d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+      resolve(sum / (W * H));
+    };
+    img.onerror = () => resolve(128);
+    img.src = dataUrl;
+  });
+}
+
 function handleFileSelect(file, purpose, autoSend = false) {
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = (e) => {
-    const dataUrl = e.target.result;
-    setPendingImage(dataUrl.split(',')[1], file.type || 'image/jpeg', purpose, dataUrl);
+  reader.onload = async (e) => {
+    const dataUrl = await _resizeImage(e.target.result);
+    const brightness = await _checkImageBrightness(dataUrl);
+    if (brightness < 45) {
+      const msg = 'La foto parece muy oscura. Buscá mejor iluminación e intentá de nuevo.';
+      addMessage('assistant', msg);
+      await speak(msg);
+      if (conversationMode) triggerListenWithCue();
+      return;
+    }
+    setPendingImage(dataUrl.split(',')[1], 'image/jpeg', purpose, dataUrl);
     if (autoSend) setTimeout(() => sendMessage(), 700);
   };
   reader.readAsDataURL(file);
@@ -540,6 +899,7 @@ btnClearImage.addEventListener('click', () => {
 
 /* ─── Chat helpers ───────────────────────────────────────────────────────── */
 function addMessage(role, text, imgSrc) {
+  if (role === 'assistant' && text) _lastBotResponse = text;
   const wrapper = document.createElement('div');
   wrapper.className = `message ${role}`;
   wrapper.setAttribute('role', 'log');
@@ -561,6 +921,7 @@ function addMessage(role, text, imgSrc) {
 function setLoading(show) {
   loadingIndicator.classList.toggle('hidden', !show);
   btnSend.disabled = show;
+  if (show) setFaceState('processing');
 }
 
 /* ─── Envío de mensajes ─────────────────────────────────────────────────── */
@@ -583,10 +944,19 @@ async function sendMessage() {
     return;
   }
 
-  // Consulta de cotización del dólar (siempre activo)
-  if (!hasImage && matchVoiceCmd(text.toLowerCase(), DOLAR_WORDS)) {
+  if (!hasImage && matchVoiceCmd(text.toLowerCase(), REPEAT_WORDS)) { textInput.value = ''; handleRepeatCommand(text); return; }
+  if (!hasImage && matchVoiceCmd(text.toLowerCase(), HELP_WORDS))   { textInput.value = ''; handleHelpCommand(text);   return; }
+  if (!hasImage && matchVoiceCmd(text.toLowerCase(), DOLLAR_WORDS)) { textInput.value = ''; handleDollarCommand(text); return; }
+  if (!hasImage && matchVoiceCmd(text.toLowerCase(), CALC_WORDS))   { textInput.value = ''; handleCalcCommand(text);   return; }
+
+  // Comando de facturas digitales escrito/dictado
+  if (!hasImage && matchVoiceCmd(text.toLowerCase(), DIGITAL_INVOICE_WORDS)) {
     textInput.value = '';
-    handleDolarCommand(text);
+    if (_cachedDirHandle) {
+      openDigitalInvoicesFlow();
+    } else {
+      showDigitalVoiceOverlay();
+    }
     return;
   }
 
@@ -628,6 +998,8 @@ async function sendMessage() {
     paymentResult = data.payment_result;
     if (paymentResult) state.lastPaymentInsufficient = !paymentResult.sufficient;
     state.addBillsMode = false;
+    if (data.invoice_data?.due_date && data.invoice_data?.is_valid_document !== false)
+      saveInvoiceToStorage(data.invoice_data);
     addMessage('assistant', data.response);
   } catch (err) {
     const rawMsg = err.message || '';
@@ -686,8 +1058,13 @@ btnReset.addEventListener('click', async () => {
   if (state.sessionId) {
     try { await fetch(`${API_BASE}/api/reset?session_id=${state.sessionId}`, { method: 'POST' }); } catch (_) {}
   }
+  state.sessionId = null;
   paymentPanel.classList.add('hidden');
-  const msg = 'Transacción reiniciada. ¿Qué factura querés pagar?';
+  imagePreviewContainer.classList.add('hidden');
+  imagePreview.src = '';
+  textInput.value = '';
+  chatMessages.innerHTML = '';
+  const msg = 'Hola, soy tu asistente de pagos. Puedo leer tus facturas e identificar tus billetes. ¿Qué necesitás?';
   addMessage('assistant', msg);
   speak(msg);
 });
@@ -725,21 +1102,536 @@ async function startAccessibilityMode() {
   accessibilityOverlay.classList.add('fade-out');
   setTimeout(() => accessibilityOverlay.classList.add('hidden'), 400);
 
-  // Activar modo conversación automáticamente
+  // Solo precargar el handle si el permiso ya está vigente — nunca pedir carpeta al inicio
+  if (window.showDirectoryPicker && !_cachedDirHandle) {
+    try {
+      const handle = await _loadDirHandle();
+      if (handle) {
+        const perm = await handle.queryPermission({ mode: 'read' });
+        if (perm === 'granted') _cachedDirHandle = handle;
+        else await _clearDirHandle();
+      }
+    } catch (_) {}
+  }
+
+  // Limpiar chat y activar modo conversación
+  chatMessages.innerHTML = '';
   conversationMode = true;
   btnConversation.classList.add('active');
   btnConversation.setAttribute('aria-pressed', 'true');
 
-  // Mensaje de bienvenida completo con instrucciones de uso táctil
-  const welcome = [
-    'Hola, soy tu asistente de pagos.',
-    'Puedo leer tus facturas e identificar tus billetes.',
-    'Decime qué necesitás.'
-  ].join(' ');
-
+  const welcome = 'Hola, soy tu asistente de pagos. Puedo leer tus facturas e identificar tus billetes. Decime qué necesitás.';
+  addMessage('assistant', welcome);
   await speak(welcome);
+
+  const reminders = checkDueReminders();
+  for (const r of reminders) {
+    addMessage('assistant', r.label + '.');
+    await speak(r.label + '.');
+  }
+
   triggerListenWithCue();
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   FACTURAS DIGITALES — Acceso a PDFs en Descargas por voz (Chrome Android)
+   Usa File System Access API (showDirectoryPicker) + IndexedDB para persistir
+   el permiso entre sesiones. El usuario selecciona la factura solo por voz.
+═══════════════════════════════════════════════════════════════════════════ */
+
+// Callback inyectado mientras el overlay está activo — intercepta el próximo STT
+let _digitalInvoiceCallback = null;
+
+const DIGITAL_INVOICE_WORDS = [
+  // "ver/pagar/abrir/buscar factura digital"
+  /\b(ver|pagar|abrir|buscar|traer|mostrar|leer|quiero)\b.{0,20}(factura|boleta|recibo)\s*(digital|descargada|del\s+cel(ular)?|del\s+tel[eé]fono)/i,
+  // "factura digital" sola
+  /\b(factura|boleta|recibo)\s*(digital|descargada|del\s+cel(ular)?)/i,
+  // "facturas digitales" (plural)
+  /\bfacturas?\s+digitales?\b/i,
+  // "mis facturas en descargas/el celu"
+  /(mis?\s+)?facturas?\s+(en\s+)?(descargas?|el\s+cel(ular)?|el\s+tel[eé]fono)/i,
+  // "pagar una factura del celular"
+  /pagar\s+(una\s+)?factura\s+(del\s+cel(ular)?|digital|descargada)/i,
+];
+
+let _cachedDirHandle = null; // sincronizado con IDB; si no es null, permisos ya otorgados
+
+/* ─── IndexedDB: persistir handle de directorio entre sesiones ─────────── */
+function _openDigitalIDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('agente-facturas-digital', 1);
+    req.onupgradeneeded = (e) => e.target.result.createObjectStore('handles');
+    req.onsuccess = (e) => resolve(e.target.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function _loadDirHandle() {
+  try {
+    const db = await _openDigitalIDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction('handles', 'readonly');
+      const req = tx.objectStore('handles').get('downloads');
+      req.onsuccess = (e) => resolve(e.target.result ?? null);
+      req.onerror = () => resolve(null);
+    });
+  } catch (_) { return null; }
+}
+
+async function _saveDirHandle(handle) {
+  _cachedDirHandle = handle;
+  try {
+    const db = await _openDigitalIDB();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction('handles', 'readwrite');
+      tx.objectStore('handles').put(handle, 'downloads');
+      tx.oncomplete = resolve;
+      tx.onerror = reject;
+    });
+  } catch (_) {}
+}
+
+async function _clearDirHandle() {
+  _cachedDirHandle = null;
+  try {
+    const db = await _openDigitalIDB();
+    await new Promise((resolve) => {
+      const tx = db.transaction('handles', 'readwrite');
+      tx.objectStore('handles').delete('downloads');
+      tx.oncomplete = resolve;
+    });
+    console.log('[digital] handle stale eliminado de IDB');
+  } catch (_) {}
+}
+
+/* ─── Helpers ───────────────────────────────────────────────────────────── */
+function cleanPDFName(filename) {
+  return filename
+    .replace(/\.pdf$/i, '')
+    .replace(/[_\-\.]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function listPDFsFromDir(dirHandle) {
+  const pdfs = [];
+  try {
+    for await (const entry of dirHandle.values()) {
+      if (entry.kind === 'file' && entry.name.toLowerCase().endsWith('.pdf')) {
+        try {
+          const file = await entry.getFile();
+          pdfs.push({ name: entry.name, cleanName: cleanPDFName(entry.name), file, lastModified: file.lastModified });
+        } catch (_) {}
+      }
+    }
+  } catch (err) { console.warn('[digital] error leyendo directorio:', err); }
+  return pdfs.sort((a, b) => b.lastModified - a.lastModified).slice(0, 10);
+}
+
+function matchPDFByVoice(transcript, pdfs) {
+  const t = transcript.toLowerCase();
+  const ordinals = [
+    /primer|primera|primero|\buno\b|\b1\b/,
+    /segund|\bdos\b|\b2\b/,
+    /tercer|tercera|\btres\b|\b3\b/,
+    /cuart|\bcuatro\b|\b4\b/,
+    /quint|\bcinco\b|\b5\b/,
+    /sext|\bseis\b|\b6\b/,
+    /s[eé]ptim|\bsiete\b|\b7\b/,
+    /octav|\bocho\b|\b8\b/,
+    /noven|\bnueve\b|\b9\b/,
+    /d[eé]cim|\bdiez\b|\b10\b/,
+  ];
+  for (let i = 0; i < ordinals.length && i < pdfs.length; i++) {
+    if (ordinals[i].test(t)) return pdfs[i];
+  }
+  // Fuzzy: cualquier palabra >3 chars del nombre presente en el transcript
+  for (const pdf of pdfs) {
+    const words = pdf.cleanName.toLowerCase().split(' ').filter(w => w.length > 3);
+    if (words.some(w => t.includes(w))) return pdf;
+  }
+  return null;
+}
+
+/* ─── Overlay UI ────────────────────────────────────────────────────────── */
+const digitalOverlay   = document.getElementById('digital-invoice-overlay');
+const digitalPdfList   = document.getElementById('digital-pdf-list');
+const digitalStatus    = document.getElementById('digital-status');
+const btnCloseDigital  = document.getElementById('btn-close-digital');
+
+const ORDINAL_LABELS = ['Primera', 'Segunda', 'Tercera', 'Cuarta', 'Quinta',
+                        'Sexta', 'Séptima', 'Octava', 'Novena', 'Décima'];
+
+function renderDigitalOverlay(pdfs) {
+  digitalPdfList.innerHTML = pdfs.map((pdf, i) =>
+    `<li class="digital-pdf-item" id="dpdf-${i}">
+      <span class="digital-pdf-number">${i + 1}.</span>
+      <span>${pdf.cleanName}</span>
+    </li>`
+  ).join('');
+  digitalStatus.textContent = 'Escuchando... Decí el número o parte del nombre.';
+  digitalOverlay.classList.remove('hidden');
+}
+
+function closeDigitalOverlay() {
+  _digitalInvoiceCallback = null;
+  digitalOverlay.classList.add('hidden');
+  stopListening();
+}
+
+function highlightDigitalItem(index) {
+  document.querySelectorAll('.digital-pdf-item').forEach((el, i) => {
+    el.classList.toggle('selected', i === index);
+  });
+}
+
+btnCloseDigital.addEventListener('click', () => {
+  closeDigitalOverlay();
+  if (conversationMode) triggerListenWithCue();
+});
+
+/* ─── Flujo principal ───────────────────────────────────────────────────── */
+async function openDigitalInvoicesFlow() {
+  _digitalInvoiceCallback = null; // limpiar cualquier callback colgado de una sesión anterior
+  if (!window.showDirectoryPicker) {
+    const msg = 'Las facturas digitales requieren Chrome en Android. En este dispositivo no está disponible.';
+    addMessage('assistant', msg);
+    await speak(msg);
+    return;
+  }
+
+  // Pausar modo conversación durante la selección
+  const wasConversation = conversationMode;
+  conversationMode = false;
+  stopListening();
+
+  // Obtener o solicitar acceso al directorio
+  console.log('[digital] iniciando flujo');
+  let dirHandle = await _loadDirHandle();
+  console.log('[digital] handle cargado de IDB:', dirHandle ? `OK (${dirHandle.name})` : 'null');
+
+  // Verificar handle guardado SIN llamar requestPermission()
+  // requestPermission() consume el gesto de usuario aunque falle,
+  // dejando a showDirectoryPicker() sin gesto válido.
+  if (dirHandle) {
+    try {
+      const perm = await dirHandle.queryPermission({ mode: 'read' });
+      console.log('[digital] queryPermission:', perm);
+      if (perm !== 'granted') {
+        // No llamamos requestPermission — caemos directo al picker
+        console.log('[digital] permiso no vigente, abriendo picker');
+        await _clearDirHandle();
+        dirHandle = null;
+      }
+    } catch (err) {
+      console.error('[digital] queryPermission falló:', err.name);
+      await _clearDirHandle();
+      dirHandle = null;
+    }
+  }
+
+  if (!dirHandle) {
+    console.log('[digital] abriendo showDirectoryPicker...');
+    try {
+      dirHandle = await window.showDirectoryPicker({ mode: 'read' });
+      console.log('[digital] directorio seleccionado:', dirHandle.name);
+      await _saveDirHandle(dirHandle);
+      console.log('[digital] handle guardado en IDB');
+    } catch (err) {
+      console.error('[digital] showDirectoryPicker falló:', err.name, err.message);
+      conversationMode = wasConversation;
+      if (err.name !== 'AbortError') {
+        const msg = 'No pude abrir el selector de carpetas. Intentá de nuevo.';
+        addMessage('assistant', msg);
+        await speak(msg);
+      }
+      if (wasConversation) triggerListenWithCue();
+      return;
+    }
+  }
+
+  // Listar PDFs
+  console.log('[digital] listando PDFs en:', dirHandle.name);
+  digitalStatus.textContent = 'Buscando facturas...';
+  digitalOverlay.classList.remove('hidden');
+  const pdfs = await listPDFsFromDir(dirHandle);
+  console.log('[digital] PDFs encontrados:', pdfs.map(p => p.name));
+
+  if (pdfs.length === 0) {
+    digitalOverlay.classList.add('hidden');
+    conversationMode = wasConversation;
+    const msg = 'No encontré archivos PDF en esa carpeta. Asegurate de tener facturas descargadas en Descargas.';
+    addMessage('assistant', msg);
+    await speak(msg);
+    if (wasConversation) triggerListenWithCue();
+    return;
+  }
+
+  // Preguntar por el emisor antes de leer la lista completa
+  digitalOverlay.classList.add('hidden'); // ocultar el spinner de búsqueda
+  await askForEmisor(pdfs, wasConversation);
+}
+
+/* ─── Fecha relativa ────────────────────────────────────────────────────── */
+function relativeDate(timestamp) {
+  const now  = new Date();
+  const d    = new Date(timestamp);
+  const diff = Math.floor((now - d) / 86400000);
+  if (diff === 0) return 'hoy';
+  if (diff === 1) return 'ayer';
+  if (diff < 7) {
+    const days = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
+    return `el ${days[d.getDay()]}`;
+  }
+  return `el ${d.getDate()}/${d.getMonth() + 1}`;
+}
+
+function getDateRange(text) {
+  const t   = text.toLowerCase();
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  if (/\bhoy\b/.test(t))
+    return { from: today, to: now };
+
+  if (/\bayer\b/.test(t)) {
+    const y = new Date(today); y.setDate(y.getDate() - 1);
+    return { from: y, to: new Date(today.getTime() - 1) };
+  }
+
+  const DAY_NAMES = ['domingo','lunes','martes','mi[eé]rcoles','jueves','viernes','s[aá]bado'];
+  for (let i = 0; i < DAY_NAMES.length; i++) {
+    if (new RegExp(`\\b${DAY_NAMES[i]}\\b`).test(t)) {
+      const target = new Date(today);
+      const diff = ((today.getDay() - i) + 7) % 7 || 7;
+      target.setDate(target.getDate() - diff);
+      const end = new Date(target); end.setDate(end.getDate() + 1);
+      return { from: target, to: end };
+    }
+  }
+
+  if (/esta\s+semana/.test(t)) {
+    const start = new Date(today); start.setDate(today.getDate() - today.getDay());
+    return { from: start, to: now };
+  }
+  if (/semana\s+pasada/.test(t)) {
+    const end   = new Date(today); end.setDate(today.getDate() - today.getDay());
+    const start = new Date(end);   start.setDate(end.getDate() - 7);
+    return { from: start, to: end };
+  }
+
+  return null;
+}
+
+/* ─── Filtros combinados ────────────────────────────────────────────────── */
+function filterPDFsByEmisor(pdfs, query) {
+  const q = query.toLowerCase().trim();
+  if (!q || /todas?|todos?|no\s+s[eé]|cualquiera|da\s+igual|no\s+importa/i.test(q)) return pdfs;
+  const words = q.split(/\s+/).filter(w => w.length > 2);
+  return pdfs.filter(pdf => words.some(w => pdf.cleanName.toLowerCase().includes(w)));
+}
+
+function filterPDFs(pdfs, transcript) {
+  const range = getDateRange(transcript);
+  let pool = pdfs;
+  if (range) {
+    const byDate = pdfs.filter(p => {
+      const d = new Date(p.lastModified);
+      return d >= range.from && d <= range.to;
+    });
+    if (byDate.length > 0) pool = byDate;
+  }
+  // Intentar afinar por nombre solo si queda más de uno
+  if (pool.length > 1) {
+    const byName = filterPDFsByEmisor(pool, transcript);
+    if (byName.length > 0 && byName.length < pool.length) return byName;
+  }
+  return pool;
+}
+
+/* ─── Flujo de selección ────────────────────────────────────────────────── */
+async function askForEmisor(allPdfs, restoreConversation) {
+  const question = '¿De qué empresa es o cuándo la descargaste?';
+  addMessage('assistant', question);
+  await speak(question);
+  await new Promise(r => setTimeout(r, 700)); // esperar que el eco del TTS se disipe
+  startListening();
+
+  _digitalInvoiceCallback = async (transcript) => {
+    _digitalInvoiceCallback = null;
+
+    if (/cancel|salir|cerrar|no\s+quiero/i.test(transcript.toLowerCase())) {
+      conversationMode = restoreConversation;
+      const msg = 'Cancelado.';
+      addMessage('assistant', msg);
+      await speak(msg);
+      if (restoreConversation) triggerListenWithCue();
+      return;
+    }
+
+    addMessage('user', transcript);
+    const filtered = filterPDFs(allPdfs, transcript);
+
+    if (filtered.length === 0 || filtered === allPdfs && /todas?/i.test(transcript) === false) {
+      const noMatch = filtered.length === 0
+        ? `No encontré facturas con ese criterio. ¿Querés que te lea todas las que hay?`
+        : null;
+      if (noMatch) {
+        addMessage('assistant', noMatch);
+        await speak(noMatch);
+        startListening();
+        _digitalInvoiceCallback = async (resp) => {
+          _digitalInvoiceCallback = null;
+          addMessage('user', resp);
+          if (/s[ií]|dale|bueno|claro|todas?/i.test(resp)) {
+            await showAndReadPDFList(allPdfs, restoreConversation);
+          } else {
+            conversationMode = restoreConversation;
+            const msg = 'De acuerdo. Cuando quieras, pedí las facturas digitales de nuevo.';
+            addMessage('assistant', msg);
+            await speak(msg);
+            if (restoreConversation) triggerListenWithCue();
+          }
+        };
+        return;
+      }
+    }
+
+    const pool = filtered.length > 0 ? filtered : allPdfs;
+
+    if (pool.length === 1) {
+      const pdf = pool[0];
+      const msg = `Encontré una factura: ${pdf.cleanName}, descargada ${relativeDate(pdf.lastModified)}. La proceso ahora.`;
+      addMessage('assistant', msg);
+      await speak(msg);
+      conversationMode = restoreConversation;
+      await processDigitalPDF(pdf.file, pdf.cleanName);
+      return;
+    }
+
+    await showAndReadPDFList(pool, restoreConversation);
+  };
+}
+
+async function showAndReadPDFList(pdfs, restoreConversation) {
+  renderDigitalOverlay(pdfs);
+  const listText =
+    `Encontré ${pdfs.length} factura${pdfs.length > 1 ? 's' : ''}. ` +
+    pdfs.map((p, i) => `${ORDINAL_LABELS[i]}: ${p.cleanName}, descargada ${relativeDate(p.lastModified)}.`).join(' ') +
+    ' ¿Cuál querés? Decí el número o parte del nombre.';
+  addMessage('assistant', listText);
+  await speak(listText);
+  startDigitalSelectionLoop(pdfs, restoreConversation);
+}
+
+function startDigitalSelectionLoop(pdfs, restoreConversation) {
+  let attempts = 0;
+
+  function listen() {
+    startListening();
+
+    _digitalInvoiceCallback = async (transcript) => {
+      _digitalInvoiceCallback = null;
+
+      if (/cancel|ninguna|salir|cerrar|no\s+quiero/i.test(transcript.toLowerCase())) {
+        closeDigitalOverlay();
+        conversationMode = restoreConversation;
+        const msg = 'Cancelado.';
+        addMessage('assistant', msg);
+        await speak(msg);
+        if (restoreConversation) triggerListenWithCue();
+        return;
+      }
+
+      const matched = matchPDFByVoice(transcript, pdfs);
+
+      if (matched) {
+        const idx = pdfs.indexOf(matched);
+        highlightDigitalItem(idx);
+        digitalStatus.textContent = `Seleccionada: ${matched.cleanName}`;
+        addMessage('user', transcript);
+        const confirmMsg = `Procesando factura de ${matched.cleanName}.`;
+        addMessage('assistant', confirmMsg);
+        await speak(confirmMsg);
+        closeDigitalOverlay();
+        conversationMode = restoreConversation;
+        await processDigitalPDF(matched.file, matched.cleanName);
+      } else {
+        attempts++;
+        if (attempts >= 3) {
+          closeDigitalOverlay();
+          conversationMode = restoreConversation;
+          const msg = 'No pude identificar la selección. Usá el botón Factura para subir el PDF manualmente.';
+          addMessage('assistant', msg);
+          await speak(msg);
+          if (restoreConversation) triggerListenWithCue();
+          return;
+        }
+        digitalStatus.textContent = `No entendí (intento ${attempts}/3). Intentá de nuevo.`;
+        const retryMsg = 'No entendí. Decí el número, por ejemplo "la primera", o el nombre de la empresa.';
+        await speak(retryMsg);
+        listen();
+      }
+    };
+  }
+
+  listen();
+}
+
+async function processDigitalPDF(file, cleanName) {
+  const base64 = await new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => resolve(e.target.result.split(',')[1]);
+    reader.readAsDataURL(file);
+  });
+
+  imagePreview.src = '';
+  state.pendingImage = { base64, mime: 'application/pdf', purpose: 'invoice' };
+  textInput.value = `Factura digital: ${cleanName}`;
+  setTimeout(() => sendMessage(), 400);
+}
+
+/* ─── Botón y comando de voz ────────────────────────────────────────────── */
+const btnDigitalInvoice = document.getElementById('btn-digital-invoice');
+btnDigitalInvoice.addEventListener('click', openDigitalInvoicesFlow);
+
+function showDigitalVoiceOverlay() {
+  // Reutiliza el voice-cam-overlay: el tap del usuario SÍ es gesto válido para el picker
+  const overlay = document.getElementById('voice-camera-overlay');
+  const text    = document.getElementById('voice-camera-text');
+  text.textContent = 'Toca para acceder a tus facturas digitales';
+  overlay.classList.remove('hidden');
+  speak('Toca la pantalla para abrir tus facturas digitales.');
+
+  function onTap() {
+    overlay.classList.add('hidden');
+    overlay.removeEventListener('click', onTap);
+    openDigitalInvoicesFlow(); // tap real → gesto válido → picker se abre
+  }
+  overlay.addEventListener('click', onTap);
+}
+
+/* ─── Controls drawer ────────────────────────────────────────────────────── */
+const controlsDrawer   = document.getElementById('controls-drawer');
+const controlsBackdrop = document.getElementById('controls-backdrop');
+const fabOpen          = document.getElementById('fab-open');
+const fabClose         = document.getElementById('fab-close');
+
+function openDrawer() {
+  controlsDrawer.classList.remove('hidden');
+  requestAnimationFrame(() => controlsDrawer.classList.add('open'));
+}
+
+function closeDrawer() {
+  controlsDrawer.classList.remove('open');
+  setTimeout(() => controlsDrawer.classList.add('hidden'), 330);
+}
+
+fabOpen.addEventListener('click', openDrawer);
+fabClose.addEventListener('click', closeDrawer);
+controlsBackdrop.addEventListener('click', closeDrawer);
+document.getElementById('face-screen').addEventListener('click', openDrawer);
 
 /* ─── Init ───────────────────────────────────────────────────────────────── */
 if (window.speechSynthesis) speechSynthesis.onvoiceschanged = () => {};
@@ -748,7 +1640,8 @@ if (isMobile()) {
   const tip = document.getElementById('desktop-tip');
   if (tip) tip.remove();
 } else {
-  // En desktop, saltear la pantalla de inicio y enfocar el input
+  // En desktop: saltear pantalla de inicio y abrir drawer directamente
   accessibilityOverlay.classList.add('hidden');
-  textInput.focus();
+  openDrawer();
+  setTimeout(() => textInput.focus(), 350);
 }
