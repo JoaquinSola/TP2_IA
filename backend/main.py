@@ -22,7 +22,7 @@ from langchain_core.messages import HumanMessage
 
 from backend.models.schemas import ChatRequest, ChatResponse
 from backend.sessions.manager import get_or_create_session, reset_transaction
-from backend.agent.graph import graph, get_client
+from backend.agent.graph import graph, get_gemini_client
 from backend.agent.state import AgentState
 from backend.observability.logger import log_session_start, get_session_logs
 
@@ -211,7 +211,7 @@ async def text_to_speech(body: dict):
 @app.post("/api/transcribe")
 async def transcribe_audio(audio: UploadFile = File(...)):
     """
-    Transcribe audio con Groq Whisper (STT sin HTTPS para mobile).
+    Transcribe audio con Gemini (STT sin HTTPS para mobile).
     Acepta audio/* y video/* — en Android, capture=microphone puede enviar distintos formatos.
     """
     audio_bytes = await audio.read()
@@ -220,28 +220,18 @@ async def transcribe_audio(audio: UploadFile = File(...)):
     if len(audio_bytes) > 25 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="El archivo supera 25 MB.")
 
-    # Determinar nombre de archivo con extensión correcta para Groq Whisper
     mime = audio.content_type or "audio/mpeg"
-    ext_map = {
-        "audio/mpeg": "mp3", "audio/mp3": "mp3",
-        "audio/mp4": "mp4", "audio/m4a": "m4a",
-        "audio/wav": "wav", "audio/x-wav": "wav",
-        "audio/ogg": "ogg", "audio/webm": "webm",
-        "video/mp4": "mp4", "video/webm": "webm",
-        "video/3gpp": "mp4", "video/quicktime": "mp4",
-    }
-    ext = ext_map.get(mime, "mp3")
-    filename = f"audio.{ext}"
 
     def _transcribe() -> str:
-        client = get_client()
-        transcription = client.audio.transcriptions.create(
-            file=(filename, audio_bytes),
-            model="whisper-large-v3-turbo",
-            language="es",
-            response_format="text",
+        from google.genai import types as genai_types
+        response = get_gemini_client().models.generate_content(
+            model=os.getenv("GEMINI_TEXT_MODEL", "gemini-2.0-flash"),
+            contents=[
+                genai_types.Part.from_bytes(data=audio_bytes, mime_type=mime),
+                "Transcribí el siguiente audio al español. Devolvé solo el texto transcripto, sin comentarios adicionales.",
+            ],
         )
-        return transcription if isinstance(transcription, str) else transcription.text
+        return response.text.strip() if response.text else ""
 
     try:
         transcript = await asyncio.get_event_loop().run_in_executor(None, _transcribe)
