@@ -4,9 +4,11 @@ Implementa un loop ReAct con nodos especializados para cada herramienta.
 """
 import os
 import re
+import time
 from typing import Literal
 
-from groq import Groq
+from google import genai
+from google.genai import types as genai_types
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import StateGraph, END
 
@@ -22,19 +24,61 @@ from backend.agent.prompts import (
 from backend.rag.knowledge_base import retrieve_context
 from backend.observability.logger import log_llm_call, log_error, Timer
 
-_TEXT_MODEL = os.getenv("GROQ_TEXT_MODEL", "llama-3.3-70b-versatile")
-_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
-_client: Groq | None = None
+_TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
+_FALLBACK_MODEL = "gemini-flash-lite-latest"
+_gemini_client: genai.Client | None = None
 
 
-def get_client() -> Groq:
-    global _client
-    if _client is None:
-        api_key = os.getenv("GROQ_API_KEY", "")
+def get_gemini_client() -> genai.Client:
+    global _gemini_client
+    if _gemini_client is None:
+        api_key = os.getenv("GEMINI_API_KEY", "")
         if not api_key:
-            raise RuntimeError("GROQ_API_KEY no está configurada. Revisá el archivo .env.")
-        _client = Groq(api_key=api_key)
-    return _client
+            raise RuntimeError("GEMINI_API_KEY no está configurada. Revisá el archivo .env.")
+        _gemini_client = genai.Client(api_key=api_key)
+    return _gemini_client
+
+
+def _is_retryable(err_str: str) -> bool:
+    return any(x in err_str for x in ("503", "429", "UNAVAILABLE", "Resource has been exhausted"))
+
+
+def _config_for_fallback(config) -> "genai_types.GenerateContentConfig":
+    """Copia el config sin thinking_config — los modelos de fallback no lo soportan."""
+    kwargs = {}
+    for field in ("system_instruction", "temperature", "max_output_tokens", "top_p", "top_k"):
+        val = getattr(config, field, None)
+        if val is not None:
+            kwargs[field] = val
+    return genai_types.GenerateContentConfig(**kwargs)
+
+
+def call_gemini_with_retry(contents, config, label: str = "gemini") -> tuple:
+    """
+    Llama a Gemini con retry + fallback de modelo.
+    Intento 1: modelo primario (2.5-flash)
+    Intento 2: modelo primario con 1s de espera
+    Intento 3+: modelo de fallback (flash-lite) — sin thinking_config
+    Retorna (response, model_usado).
+    """
+    client = get_gemini_client()
+    models_to_try = [_TEXT_MODEL, _FALLBACK_MODEL, _FALLBACK_MODEL]
+    for attempt, model in enumerate(models_to_try):
+        cfg = config if attempt == 0 else _config_for_fallback(config)
+        try:
+            response = client.models.generate_content(model=model, contents=contents, config=cfg)
+            if attempt > 0:
+                print(f"[{label}] OK en intento {attempt+1} con {model}")
+            return response, model
+        except Exception as e:
+            err_str = str(e)
+            if _is_retryable(err_str):
+                wait = 1 if attempt == 0 else 2
+                print(f"[{label}] 503/429 (intento {attempt+1}), reintentando con {models_to_try[attempt+1] if attempt+1 < len(models_to_try) else 'nada'} en {wait}s")
+                if attempt + 1 < len(models_to_try):
+                    time.sleep(wait)
+                    continue
+            raise
 
 
 # ─── Nodos del grafo ─────────────────────────────────────────────────────────
@@ -42,6 +86,9 @@ def get_client() -> Groq:
 
 def rag_node(state: AgentState) -> dict:
     """Recupera contexto relevante de la base de conocimiento (RAG)."""
+    # Si hay imagen pendiente, agent_node cortocircuita sin usar el contexto RAG — saltearlo.
+    if state.get("invoice_image_bytes") or state.get("bills_image_bytes"):
+        return {"rag_context": "", "step": "rag"}
     last_msg = state["messages"][-1].content if state["messages"] else ""
     query = last_msg if isinstance(last_msg, str) else "factura pago billete"
     context = retrieve_context(query)
@@ -96,18 +143,16 @@ def agent_node(state: AgentState) -> dict:
         rag_context=state.get("rag_context", ""),
     )
 
+    config = genai_types.GenerateContentConfig(
+        system_instruction=SYSTEM_PROMPT,
+        temperature=0.3,
+        max_output_tokens=1024,
+        thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+    )
     with Timer() as t:
         try:
-            response = get_client().chat.completions.create(
-                model=_TEXT_MODEL,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.3,
-                max_tokens=1024,
-            )
-            raw = response.choices[0].message.content.strip() if response.choices else ""
+            response, _ = call_gemini_with_retry(prompt, config, label="agent_node")
+            raw = response.text.strip() if response.text else ""
         except Exception as e:
             log_error(session_id, "agent_node", str(e))
             return {
@@ -116,7 +161,7 @@ def agent_node(state: AgentState) -> dict:
                 "step": "error",
             }
 
-    token_count = response.usage.total_tokens if response.usage else None
+    token_count = response.usage_metadata.total_token_count if (response and response.usage_metadata) else None
     log_llm_call(
         session_id=session_id,
         node="agent_node",
@@ -141,6 +186,30 @@ def agent_node(state: AgentState) -> dict:
         }
 
 
+def _due_date_alert(due_date_str: str | None) -> str:
+    """Prefijo de alerta si la factura está próxima a vencer o ya venció."""
+    if not due_date_str:
+        return ""
+    from datetime import datetime, date as _date
+    today = _date.today()
+    for fmt in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            due = datetime.strptime(due_date_str.strip(), fmt).date()
+            delta = (due - today).days
+            if delta < 0:
+                return f"Atención: esta factura venció hace {abs(delta)} día{'s' if abs(delta) != 1 else ''}. "
+            if delta == 0:
+                return "Atención: esta factura vence hoy. "
+            if delta == 1:
+                return "Atención: esta factura vence mañana. "
+            if delta <= 3:
+                return f"Atención: esta factura vence en {delta} días. "
+            return ""
+        except ValueError:
+            continue
+    return ""
+
+
 def extract_invoice_node(state: AgentState) -> dict:
     from backend.tools.invoice_extractor import extraer_datos_factura
 
@@ -150,17 +219,16 @@ def extract_invoice_node(state: AgentState) -> dict:
             session_id=session_id,
             image_bytes=state.get("invoice_image_bytes"),
             image_mime=state.get("invoice_image_mime"),
-            client=get_client(),
-            model_name=_VISION_MODEL,
         )
         summary = format_invoice_summary(invoice)
-        response_msg = summary
+        alert = _due_date_alert(invoice.due_date)
+        response_msg = alert + summary
 
         if not invoice.is_valid_document:
             response_msg = invoice.error_message or "No pude procesar la factura."
         elif invoice.second_due_date and invoice.second_amount:
             response_msg = (
-                f"{summary}. "
+                f"{alert}{summary}. "
                 f"También hay un segundo vencimiento el {invoice.second_due_date} "
                 f"por {_fmt_ars(invoice.second_amount)} pesos. "
                 f"¿Con qué monto querés continuar?"
@@ -175,7 +243,7 @@ def extract_invoice_node(state: AgentState) -> dict:
             }
 
         if invoice.is_valid_document and invoice.total_amount:
-            response_msg += " Cuando tengas los billetes listos, sacá una foto de ellos sobre la mesa."
+            response_msg += " Si tenés billetes para pagar, avisame."
 
         return {
             "invoice_data": invoice.model_dump(),
@@ -204,8 +272,6 @@ def identify_bills_node(state: AgentState) -> dict:
             session_id=session_id,
             image_bytes=state.get("bills_image_bytes"),
             image_mime=state.get("bills_image_mime"),
-            client=get_client(),
-            model_name=_VISION_MODEL,
         )
         summary = format_bills_summary(bills)
 

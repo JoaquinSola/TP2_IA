@@ -1,14 +1,13 @@
 """
 Tool: extraer_datos_factura
-Analiza imagen o PDF de factura usando Groq vision y retorna datos estructurados.
+Analiza imagen o PDF de factura usando Gemini vision y retorna datos estructurados.
 """
-import base64
 import io
 import json
+import os
 import re
 from typing import Optional
 
-from groq import Groq
 from PIL import Image
 
 from backend.models.schemas import InvoiceData
@@ -44,6 +43,8 @@ INSTRUCCIONES DE EXTRACCIÓN:
    - Devolvé el monto en formato internacional sin puntos de miles.
    - Ejemplos: "22.000,00" → 22000 | "1.500,50" → 1500.50 | "$34.000" → 34000 | "850,00" → 850.
    - NUNCA devuelvas 22.0 cuando dice "22.000" — eso es veintidós MIL, no veintidós.
+   - Los montos de facturas y tickets domésticos en Argentina están entre 100 y 10.000.000 pesos.
+   - IGNORÁ códigos de barras, CBU, CUIT y números de cuenta — tienen 13 o más dígitos y NO son montos.
 6. Marcá is_valid_document como FALSE únicamente si la imagen NO muestra ningún comprobante de pago (ej: una selfie, una foto de paisaje, un documento de identidad, texto sin montos).
 7. Respondé SIEMPRE en formato JSON puro, sin texto adicional, sin bloques markdown.
 
@@ -61,31 +62,28 @@ FORMATO DE RESPUESTA (JSON estricto, sin ```):
 CRÍTICO: NO inventes datos. Si no podés leer un campo con certeza, usá null."""
 
 
-def _prepare_image(image_bytes: bytes, mime_type: str) -> tuple[bytes, str]:
-    """Redimensiona la imagen si supera 3MB para no exceder límites de la API."""
-    if len(image_bytes) <= 3 * 1024 * 1024:
-        return image_bytes, mime_type
+def _prepare_image(image_bytes: bytes) -> tuple[bytes, str]:
     try:
+        from PIL import ImageOps
         img = Image.open(io.BytesIO(image_bytes))
+        img = ImageOps.exif_transpose(img)
         if img.mode in ('RGBA', 'P', 'LA'):
             img = img.convert('RGB')
-        max_dim = 1920
+        max_dim = 1280
         if max(img.size) > max_dim:
             ratio = max_dim / max(img.size)
             img = img.resize((int(img.size[0] * ratio), int(img.size[1] * ratio)), Image.LANCZOS)
         output = io.BytesIO()
-        img.save(output, format='JPEG', quality=85)
+        img.save(output, format='JPEG', quality=90)
         return output.getvalue(), 'image/jpeg'
     except Exception:
-        return image_bytes, mime_type
+        return image_bytes, 'image/jpeg'
 
 
 def extraer_datos_factura(
     session_id: str,
     image_bytes: Optional[bytes],
     image_mime: Optional[str],
-    client: Groq,
-    model_name: str,
 ) -> InvoiceData:
     log_tool_call(session_id, "extraer_datos_factura", {"mime": image_mime, "size_bytes": len(image_bytes) if image_bytes else 0})
 
@@ -97,36 +95,16 @@ def extraer_datos_factura(
         log_tool_result(session_id, "extraer_datos_factura", result.model_dump(), 0)
         return result
 
-    rag_context = retrieve_context("factura servicio empresa proveedor")
-    prompt = _EXTRACTION_PROMPT.format(rag_context=rag_context)
     mime = image_mime or "image/jpeg"
 
-    img_bytes, img_mime = _prepare_image(image_bytes, mime)
-    img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+    if mime == "application/pdf":
+        rag_context = ""
+    else:
+        rag_context = retrieve_context("factura servicio empresa proveedor")
 
-    with Timer() as t:
-        try:
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:{img_mime};base64,{img_b64}"}},
-                    ],
-                }],
-                temperature=0.1,
-                max_tokens=1024,
-            )
-            raw = response.choices[0].message.content.strip() if response.choices else ""
-        except Exception as e:
-            log_tool_result(session_id, "extraer_datos_factura", {"error": str(e)}, 0)
-            return InvoiceData(
-                is_valid_document=False,
-                error_message="No pude procesar la imagen en este momento. Verificá tu conexión y volvé a intentar."
-            )
+    prompt = _EXTRACTION_PROMPT.format(rag_context=rag_context)
+    raw, t, token_count = _call_gemini(prompt, image_bytes, mime)
 
-    token_count = response.usage.total_tokens if response.usage else None
     log_llm_call(
         session_id=session_id,
         node="extraer_datos_factura",
@@ -136,13 +114,51 @@ def extraer_datos_factura(
         tokens_used=token_count,
     )
 
+    result = _parse_invoice_json(raw)
+    log_tool_result(session_id, "extraer_datos_factura", result.model_dump(), t.elapsed_ms)
+    return result
+
+
+def _call_gemini(prompt: str, data_bytes: bytes, mime: str):
+    from google.genai import types as genai_types
+    from backend.agent.graph import call_gemini_with_retry
+
+    if mime == "application/pdf":
+        part = genai_types.Part.from_bytes(data=data_bytes, mime_type="application/pdf")
+    else:
+        img_bytes, img_mime = _prepare_image(data_bytes)
+        part = genai_types.Part.from_bytes(data=img_bytes, mime_type=img_mime)
+
+    contents = [part, genai_types.Part.from_text(text=prompt)]
+
+    config = genai_types.GenerateContentConfig(
+        temperature=0.1,
+        max_output_tokens=512,
+        thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+    )
+    raw = ""
+    token_count = None
+    with Timer() as t:
+        try:
+            response, _ = call_gemini_with_retry(contents, config, label="invoice_extractor")
+            raw = response.text.strip() if response.text else ""
+            token_count = response.usage_metadata.total_token_count if response.usage_metadata else None
+        except Exception as e:
+            print(f"[invoice_extractor] Gemini falló: {e}")
+            raw = ""
+            token_count = None
+    return raw, t, token_count
+
+
+def _parse_invoice_json(raw: str) -> InvoiceData:
     try:
         clean = re.sub(r"```(?:json)?", "", raw).strip()
+        clean = re.sub(r'\s*//[^\n\r]*', '', clean)
         json_match = re.search(r'\{.*\}', clean, re.DOTALL)
         if not json_match:
-            raise ValueError("No se encontró JSON en la respuesta")
+            raise ValueError("No se encontró JSON")
         data = json.loads(json_match.group())
-        result = InvoiceData(
+        return InvoiceData(
             entity=data.get("entity"),
             total_amount=_parse_amount(data.get("total_amount")),
             due_date=data.get("due_date"),
@@ -152,13 +168,10 @@ def extraer_datos_factura(
             error_message=data.get("error_message"),
         )
     except Exception:
-        result = InvoiceData(
+        return InvoiceData(
             is_valid_document=False,
             error_message="No pude leer los datos de la factura claramente. Por favor, tomá una foto más nítida con mejor iluminación."
         )
-
-    log_tool_result(session_id, "extraer_datos_factura", result.model_dump(), t.elapsed_ms)
-    return result
 
 
 def _parse_amount(value) -> Optional[float]:
@@ -167,6 +180,9 @@ def _parse_amount(value) -> Optional[float]:
     try:
         if isinstance(value, str):
             value = value.replace("$", "").replace(".", "").replace(",", ".").strip()
-        return float(value)
+        amount = float(value)
+        if amount <= 0 or amount > 50_000_000:
+            return None
+        return amount
     except (ValueError, TypeError):
         return None
