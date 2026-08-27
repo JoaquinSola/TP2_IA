@@ -589,16 +589,24 @@ function _showQrModal(amount, description, initPoint, externalRef) {
         const msg = `¡Pago recibido! ${_fmtVoice(d.amount ?? amount)} pesos acreditados en tu cuenta de MercadoPago.`;
         addMessage('assistant', msg);
         await speak(msg);
-        setTimeout(() => _closeQrModal(), 3000);
+        setTimeout(() => _closeQrModal(true), 3000);
       }
     } catch (_) {}
   }, 4000);
 }
 
-function _closeQrModal() {
+async function _closeQrModal(paid = false) {
   if (_qrPollInterval) { clearInterval(_qrPollInterval); _qrPollInterval = null; }
   document.getElementById('qr-modal').classList.add('hidden');
   document.getElementById('qr-canvas-container').innerHTML = '';
+  if (paid) {
+    await new Promise(r => setTimeout(r, 400));
+    const msg = '¿Necesitás algo más?';
+    addMessage('assistant', msg);
+    await speak(msg);
+    await new Promise(r => setTimeout(r, 500));
+    startListening();
+  }
 }
 
 async function handleMpPaymentDetail(paymentId) {
@@ -914,8 +922,21 @@ function initSpeechRecognition() {
   return rec;
 }
 
+let _micWatchdog = null;
+const MIC_WATCHDOG_MS = 12000; // reiniciar si lleva 12s sin resultado
+
+function _clearMicWatchdog() {
+  if (_micWatchdog) { clearTimeout(_micWatchdog); _micWatchdog = null; }
+}
+
 function startListening() {
-  if (isSpeaking) return; // Nunca abrir el mic mientras el bot habla
+  if (isSpeaking) return;
+  // Forzar recreación si la instancia anterior quedó en estado inconsistente
+  if (state.isListening) {
+    try { state.recognition?.stop(); } catch (_) {}
+    state.isListening = false;
+    state.recognition = null;
+  }
   if (!state.recognition) state.recognition = initSpeechRecognition();
 
   if (!state.recognition) {
@@ -924,6 +945,7 @@ function startListening() {
   }
 
   state.recognition.onerror = (e) => {
+    _clearMicWatchdog();
     stopListening();
     if (['not-allowed', 'network', 'service-not-allowed'].includes(e.error)) {
       activateKeyboardDictation();
@@ -935,13 +957,24 @@ function startListening() {
   btnMic.setAttribute('aria-pressed', 'true');
   try {
     state.recognition.start();
+    // Watchdog: si en 12s no hay resultado ni onend, forzar reinicio
+    _clearMicWatchdog();
+    _micWatchdog = setTimeout(() => {
+      if (state.isListening) {
+        state.recognition = null; // forzar recreación
+        stopListening();
+        if (conversationMode) triggerListenWithCue();
+      }
+    }, MIC_WATCHDOG_MS);
   } catch (_) {
+    _clearMicWatchdog();
     stopListening();
     activateKeyboardDictation();
   }
 }
 
 function stopListening() {
+  _clearMicWatchdog();
   state.isListening = false;
   if (!isSpeaking) setFaceState('idle');
   btnMic.classList.remove('active');
@@ -1908,7 +1941,13 @@ function closeDrawer() {
 fabOpen.addEventListener('click', openDrawer);
 fabClose.addEventListener('click', closeDrawer);
 controlsBackdrop.addEventListener('click', closeDrawer);
-document.getElementById('face-screen').addEventListener('click', openDrawer);
+// Cara: tap = activar/desactivar mic (el drawer se abre con el FAB)
+document.getElementById('face-screen').addEventListener('click', () => {
+  if (!controlsDrawer.classList.contains('hidden')) return; // drawer abierto, ignorar
+  if (isSpeaking) return;
+  if (state.isListening) { stopListening(); return; }
+  startListening();
+});
 
 /* ─── Init ───────────────────────────────────────────────────────────────── */
 if (window.speechSynthesis) speechSynthesis.onvoiceschanged = () => {};
