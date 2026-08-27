@@ -560,6 +560,15 @@ html, body {
 }
 .action-btn.digital:hover { background: var(--warning); color: var(--bg); }
 
+.action-btn.mp-btn {
+  background: var(--surface2);
+  color: #00b1ea;
+  border: 1px solid #00b1ea;
+}
+.action-btn.mp-btn:hover  { background: #00b1ea; color: #fff; }
+.action-btn.mp-btn.linked { color: #00d084; border-color: #00d084; }
+.action-btn.mp-btn.linked:hover { background: #00d084; color: #fff; }
+
 .action-btn-wide {
   grid-column: 1 / -1;
   flex-direction: row;

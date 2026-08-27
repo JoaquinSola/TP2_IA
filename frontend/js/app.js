@@ -387,6 +387,17 @@ const RESET_WORDS = [
   /nuevo\s+pago/i,
 ];
 
+const MP_WORDS = [
+  /mercado\s*pago/i,
+  /\bmp\b/i,
+  /saldo\s*(de\s+)?mi\s+(cuenta|billetera)/i,
+  /cuanto\s+tengo\s+(en\s+)?mi\s+(cuenta|billetera)/i,
+  /movimientos/i,
+  /últimas?\s+transacciones?/i,
+  /últimos?\s+movimientos?/i,
+  /conectar\s+(mi\s+)?(billetera|cuenta)/i,
+];
+
 async function handleAddBillsCommand(transcript) {
   if (transcript) addMessage('user', transcript);
   state.addBillsMode = true;
@@ -455,6 +466,113 @@ async function handleDollarCommand(transcript) {
     const msg = 'No pude obtener la cotización en este momento. Verificá tu conexión e intentá de nuevo.';
     addMessage('assistant', msg);
     await speak(msg);
+  }
+  if (conversationMode) triggerListenWithCue();
+}
+
+/* ─── Feature: MercadoPago ──────────────────────────────────────────────── */
+const MP_TOKEN_KEY = 'acla_mp_token';
+
+function getMpToken() { return localStorage.getItem(MP_TOKEN_KEY) || ''; }
+function setMpToken(t) {
+  localStorage.setItem(MP_TOKEN_KEY, t);
+  _updateMpButton(true);
+}
+function clearMpToken() {
+  localStorage.removeItem(MP_TOKEN_KEY);
+  _updateMpButton(false);
+}
+
+function _updateMpButton(linked) {
+  const btn   = document.getElementById('btn-mp-connect');
+  const label = document.getElementById('btn-mp-label');
+  if (!btn) return;
+  if (linked) {
+    btn.classList.add('linked');
+    label.textContent = 'MP Conectado ✓';
+  } else {
+    btn.classList.remove('linked');
+    label.textContent = 'Conectar MercadoPago';
+  }
+}
+
+function _mpHeaders() {
+  return { 'Content-Type': 'application/json', 'X-MP-Token': getMpToken() };
+}
+
+function openMpOAuth() {
+  const popup = window.open(`${API_BASE}/api/mp/auth`, 'mp_auth',
+    'width=500,height=700,left=200,top=100');
+  if (!popup) {
+    const msg = 'El navegador bloqueó la ventana emergente. Permitila para conectar MercadoPago.';
+    addMessage('assistant', msg); speak(msg); return;
+  }
+  window.addEventListener('message', function onMsg(e) {
+    if (!e.data) return;
+    if (e.data.mp_token) {
+      setMpToken(e.data.mp_token);
+      const msg = 'MercadoPago conectado correctamente. Ahora podés preguntarme tu saldo o movimientos.';
+      addMessage('assistant', msg); speak(msg);
+    } else if (e.data.mp_error) {
+      const msg = 'No se pudo conectar MercadoPago. Intentá de nuevo.';
+      addMessage('assistant', msg); speak(msg);
+    }
+    window.removeEventListener('message', onMsg);
+  });
+}
+
+async function handleMpCommand(transcript) {
+  if (transcript) addMessage('user', transcript);
+  const lower = transcript.toLowerCase();
+
+  // Si no está conectado, iniciar OAuth
+  if (!getMpToken()) {
+    const msg = 'Primero necesito conectar tu cuenta de MercadoPago. Abriendo la pantalla de autorización...';
+    addMessage('assistant', msg);
+    await speak(msg);
+    openMpOAuth();
+    return;
+  }
+
+  // Detectar si pide movimientos o saldo
+  const wantsMovements = /movimientos?|transacciones?/i.test(lower);
+
+  setFaceState('processing');
+  try {
+    if (wantsMovements) {
+      const res = await fetch(`${API_BASE}/api/mp/movements`, { headers: _mpHeaders() });
+      if (res.status === 401) { clearMpToken(); throw new Error('token_expired'); }
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      const items = data.results || [];
+      if (!items.length) {
+        const msg = 'No encontré movimientos recientes en tu cuenta.';
+        addMessage('assistant', msg); setFaceState('idle'); await speak(msg);
+      } else {
+        const lines = items.slice(0, 5).map(m => {
+          const signo = m.amount < 0 ? 'Salida de' : 'Entrada de';
+          const monto = _fmtVoice(Math.abs(m.amount));
+          const desc  = m.description || m.type || '';
+          return `${signo} ${monto} pesos: ${desc}`;
+        });
+        const msg = `Tus últimos movimientos: ${lines.join('. ')}.`;
+        addMessage('assistant', msg); setFaceState('idle'); await speak(msg);
+      }
+    } else {
+      const res = await fetch(`${API_BASE}/api/mp/balance`, { headers: _mpHeaders() });
+      if (res.status === 401) { clearMpToken(); throw new Error('token_expired'); }
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      const disponible = data.available_balance ?? data.total_amount ?? 0;
+      const msg = `Tu saldo disponible en MercadoPago es de ${_fmtVoice(disponible)} pesos.`;
+      addMessage('assistant', msg); setFaceState('idle'); await speak(msg);
+    }
+  } catch (e) {
+    setFaceState('idle');
+    const msg = e.message === 'token_expired'
+      ? 'Tu sesión de MercadoPago expiró. Tocá el botón para volver a conectar.'
+      : 'No pude consultar MercadoPago en este momento. Verificá tu conexión.';
+    addMessage('assistant', msg); await speak(msg);
   }
   if (conversationMode) triggerListenWithCue();
 }
@@ -631,6 +749,7 @@ function initSpeechRecognition() {
     if (matchVoiceCmd(lower, HELP_WORDS))   { handleHelpCommand(transcript);   return; }
     if (matchVoiceCmd(lower, DOLLAR_WORDS)) { handleDollarCommand(transcript); return; }
     if (matchVoiceCmd(lower, CALC_WORDS))   { handleCalcCommand(transcript);   return; }
+    if (matchVoiceCmd(lower, MP_WORDS))     { handleMpCommand(transcript);     return; }
 
     // Comandos de cámara por voz
     // El browser bloquea file input .click() desde SpeechRecognition (no es gesto de usuario).
@@ -948,6 +1067,7 @@ async function sendMessage() {
   if (!hasImage && matchVoiceCmd(text.toLowerCase(), HELP_WORDS))   { textInput.value = ''; handleHelpCommand(text);   return; }
   if (!hasImage && matchVoiceCmd(text.toLowerCase(), DOLLAR_WORDS)) { textInput.value = ''; handleDollarCommand(text); return; }
   if (!hasImage && matchVoiceCmd(text.toLowerCase(), CALC_WORDS))   { textInput.value = ''; handleCalcCommand(text);   return; }
+  if (!hasImage && matchVoiceCmd(text.toLowerCase(), MP_WORDS))     { textInput.value = ''; handleMpCommand(text);     return; }
 
   // Comando de facturas digitales escrito/dictado
   if (!hasImage && matchVoiceCmd(text.toLowerCase(), DIGITAL_INVOICE_WORDS)) {
@@ -1595,6 +1715,21 @@ async function processDigitalPDF(file, cleanName) {
 /* ─── Botón y comando de voz ────────────────────────────────────────────── */
 const btnDigitalInvoice = document.getElementById('btn-digital-invoice');
 btnDigitalInvoice.addEventListener('click', openDigitalInvoicesFlow);
+
+/* ─── MercadoPago: inicializar botón ────────────────────────────────────── */
+const btnMpConnect = document.getElementById('btn-mp-connect');
+if (btnMpConnect) {
+  _updateMpButton(!!getMpToken()); // estado inicial desde localStorage
+  btnMpConnect.addEventListener('click', () => {
+    if (getMpToken()) {
+      // Ya conectado: preguntar qué quiere hacer
+      const msg = 'Ya tenés MercadoPago conectado. Podés preguntarme tu saldo o tus movimientos.';
+      addMessage('assistant', msg); speak(msg);
+    } else {
+      openMpOAuth();
+    }
+  });
+}
 
 function showDigitalVoiceOverlay() {
   // Reutiliza el voice-cam-overlay: el tap del usuario SÍ es gesto válido para el picker

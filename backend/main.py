@@ -14,9 +14,9 @@ from dotenv import load_dotenv
 _ENV_FILE = Path(__file__).parent.parent / ".env"
 load_dotenv(_ENV_FILE)
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import HumanMessage
 
@@ -304,6 +304,109 @@ async def get_dolar():
         return data
     except Exception:
         raise HTTPException(status_code=503, detail="No se pudo obtener la cotización del dólar.")
+
+
+@app.get("/api/mp/auth")
+async def mp_auth():
+    """Inicia el flujo OAuth de MercadoPago."""
+    client_id = os.getenv("MP_CLIENT_ID", "")
+    redirect_uri = os.getenv("MP_REDIRECT_URI", "")
+    if not client_id:
+        raise HTTPException(status_code=503, detail="MercadoPago no está configurado.")
+    url = (
+        "https://auth.mercadopago.com.ar/authorization"
+        f"?client_id={client_id}"
+        f"&redirect_uri={redirect_uri}"
+        "&response_type=code"
+        "&platform_id=mp"
+    )
+    return RedirectResponse(url)
+
+
+@app.get("/api/mp/callback")
+async def mp_callback(code: str = None, error: str = None):
+    """Recibe el code de MP, lo intercambia por token y lo pasa al frontend via postMessage."""
+    close_with = lambda payload: HTMLResponse(
+        f"<script>window.opener&&window.opener.postMessage({payload},'*');window.close();</script>"
+        "<p>Podés cerrar esta ventana.</p>"
+    )
+
+    if error or not code:
+        return close_with("{'mp_error':'cancelled'}")
+
+    import urllib.request, urllib.parse, json as _json
+
+    def _exchange():
+        data = urllib.parse.urlencode({
+            "client_id":     os.getenv("MP_CLIENT_ID", ""),
+            "client_secret": os.getenv("MP_CLIENT_SECRET", ""),
+            "code":          code,
+            "redirect_uri":  os.getenv("MP_REDIRECT_URI", ""),
+            "grant_type":    "authorization_code",
+        }).encode()
+        req = urllib.request.Request(
+            "https://api.mercadopago.com/oauth/token",
+            data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return _json.loads(r.read())
+
+    try:
+        token_data = await asyncio.get_event_loop().run_in_executor(None, _exchange)
+        token   = token_data.get("access_token", "")
+        user_id = str(token_data.get("user_id", ""))
+        return close_with(f"{{'mp_token':'{token}','mp_user_id':'{user_id}'}}")
+    except Exception:
+        return close_with("{'mp_error':'failed'}")
+
+
+@app.get("/api/mp/balance")
+async def mp_balance(request: Request):
+    """Consulta el saldo de la cuenta MP del usuario."""
+    token = request.headers.get("X-MP-Token", "")
+    if not token:
+        raise HTTPException(status_code=401, detail="Token MP no provisto.")
+
+    import urllib.request, json as _json
+
+    def _fetch():
+        req = urllib.request.Request(
+            "https://api.mercadopago.com/v1/account/balance",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return _json.loads(r.read())
+
+    try:
+        return await asyncio.get_event_loop().run_in_executor(None, _fetch)
+    except Exception:
+        raise HTTPException(status_code=503, detail="No se pudo obtener el saldo de MercadoPago.")
+
+
+@app.get("/api/mp/movements")
+async def mp_movements(request: Request):
+    """Retorna los últimos 5 movimientos de la cuenta MP del usuario."""
+    token = request.headers.get("X-MP-Token", "")
+    if not token:
+        raise HTTPException(status_code=401, detail="Token MP no provisto.")
+
+    import urllib.request, json as _json
+
+    def _fetch():
+        req = urllib.request.Request(
+            "https://api.mercadopago.com/v1/account/movements/search"
+            "?limit=5&sort=date_created&criteria=desc",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return _json.loads(r.read())
+
+    try:
+        return await asyncio.get_event_loop().run_in_executor(None, _fetch)
+    except Exception:
+        raise HTTPException(status_code=503, detail="No se pudo obtener los movimientos de MercadoPago.")
 
 
 @app.get("/api/health")
