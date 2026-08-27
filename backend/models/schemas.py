@@ -18,11 +18,10 @@ VALID_DENOMINATIONS = {d.value for d in BillDenomination}
 
 class Bill(BaseModel):
     denomination: int
-    position: str = "centro"  # "izquierda", "centro", "derecha", "arriba", "abajo", "primero", etc.
+    position: str = "centro"  # "izquierda", "centro", "derecha", "arriba", "abajo"
     valid: bool = True
     currency: str = "ARS"
     confidence: float = 1.0
-    scenario: str = "superficie"  # "superficie" o "mano"
 
 
 class InvoiceData(BaseModel):

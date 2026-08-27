@@ -12,6 +12,7 @@ Formatos soportados:
 Los documentos ya indexados se detectan por ID y se saltean automáticamente.
 """
 import argparse
+import base64
 import hashlib
 import os
 import sys
@@ -23,13 +24,12 @@ load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 import chromadb
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
-from google import genai
-from google.genai import types as genai_types
+from groq import Groq
 
 _CHROMA_PATH = Path(__file__).parent / "chroma_db"
 _COLLECTION_NAME = "knowledge"
 _EMBED_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
-_VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", "gemini-2.5-flash")
+_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 TEXT_EXTS  = {".txt"}
@@ -61,17 +61,21 @@ def _doc_id(path: Path) -> str:
     return hashlib.md5(str(path.resolve()).encode()).hexdigest()
 
 
-def _describe_image(gemini_client: genai.Client, path: Path) -> str:
+def _describe_image(groq_client: Groq, path: Path) -> str:
     mime = _MIME_MAP.get(path.suffix.lower(), "image/jpeg")
-    img_bytes = path.read_bytes()
-    response = gemini_client.models.generate_content(
+    b64 = base64.b64encode(path.read_bytes()).decode()
+    response = groq_client.chat.completions.create(
         model=_VISION_MODEL,
-        contents=[
-            genai_types.Part.from_bytes(data=img_bytes, mime_type=mime),
-            _VISION_PROMPT,
-        ],
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                {"type": "text", "text": _VISION_PROMPT},
+            ],
+        }],
+        max_tokens=512,
     )
-    return response.text.strip() if response.text else ""
+    return response.choices[0].message.content.strip()
 
 
 def _extract_pdf(path: Path) -> str:
@@ -90,12 +94,12 @@ def index_folder(folder: Path):
         print(f"ERROR: '{folder}' no es una carpeta válida.")
         sys.exit(1)
 
-    api_key = os.getenv("GEMINI_API_KEY", "")
+    api_key = os.getenv("GROQ_API_KEY", "")
     if not api_key:
-        print("ERROR: GEMINI_API_KEY no configurada en .env")
+        print("ERROR: GROQ_API_KEY no configurada en .env")
         sys.exit(1)
 
-    gemini_client = genai.Client(api_key=api_key)
+    groq_client = Groq(api_key=api_key)
     collection = _get_collection()
 
     files = sorted(f for f in folder.rglob("*") if f.is_file() and f.suffix.lower() in ALL_EXTS)
@@ -120,7 +124,7 @@ def index_folder(folder: Path):
 
         try:
             if suffix in IMAGE_EXTS:
-                text = _describe_image(gemini_client, path)
+                text = _describe_image(groq_client, path)
                 doc_type = "image"
             elif suffix in TEXT_EXTS:
                 text = path.read_text(encoding="utf-8")

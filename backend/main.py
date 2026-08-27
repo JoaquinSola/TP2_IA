@@ -287,6 +287,25 @@ async def get_logs(session_id: str):
     return {"session_id": session_id, "log_count": len(logs), "logs": logs}
 
 
+@app.get("/api/dolar")
+async def get_dolar():
+    """Cotización del dólar desde dolarapi.com (proxy para evitar CORS)."""
+    import urllib.request
+    import json as _json
+    def _fetch():
+        req = urllib.request.Request(
+            "https://dolarapi.com/v1/dolares",
+            headers={"User-Agent": "ACLA-Bot/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return _json.loads(r.read())
+    try:
+        data = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+        return data
+    except Exception:
+        raise HTTPException(status_code=503, detail="No se pudo obtener la cotización del dólar.")
+
+
 @app.get("/api/health")
 async def health():
     return {
