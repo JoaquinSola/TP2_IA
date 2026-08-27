@@ -563,16 +563,9 @@ async function handleMpCommand(transcript) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'balance_error');
       console.log('[MP balance raw]', JSON.stringify(data));
-      if (data.balance_error) {
-        // El token funciona pero el endpoint de saldo no está disponible — informar
-        const nombre = data.user?.first_name || 'vos';
-        const msg = `Conectado como ${nombre}, pero no pude obtener el saldo numérico: ${data.balance_error}`;
-        addMessage('assistant', msg); setFaceState('idle'); await speak(msg);
-      } else {
-        const bal = data.balance || {};
-        const disponible = bal.available_balance ?? bal.total_amount ?? 0;
-        const nombre = data.user?.first_name ? ` (${data.user.first_name})` : '';
-        const msg = `Tu saldo disponible en MercadoPago${nombre} es de ${_fmtVoice(disponible)} pesos.`;
+      {
+        const nombre = data.user?.first_name || data.user?.nickname || 'vos';
+        const msg = `Tu cuenta de MercadoPago está conectada como ${nombre}. MercadoPago no permite consultar el saldo via su API para apps de terceros. Podés pedirme tus últimos movimientos si querés ver tu actividad reciente.`;
         addMessage('assistant', msg); setFaceState('idle'); await speak(msg);
       }
     }

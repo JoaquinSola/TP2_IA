@@ -367,7 +367,7 @@ async def mp_callback(code: str = None, error: str = None):
 
 @app.get("/api/mp/balance")
 async def mp_balance(request: Request):
-    """Consulta saldo y datos del usuario MP."""
+    """Consulta datos del usuario MP. El saldo no está disponible via API OAuth para cuentas personales."""
     token = request.headers.get("X-MP-Token", "")
     if not token:
         raise HTTPException(status_code=401, detail="Token MP no provisto.")
@@ -391,13 +391,9 @@ async def mp_balance(request: Request):
     if user_err:
         raise HTTPException(status_code=503, detail=f"MP /users/me error: {user_err}")
 
-    balance_data, bal_err = await loop.run_in_executor(
-        None, _fetch, "https://api.mercadopago.com/v1/account/balance"
-    )
-    if bal_err:
-        return {"user": user_data, "balance_error": bal_err}
-
-    return {"user": user_data, "balance": balance_data}
+    # MercadoPago no expone el saldo de billetera via API OAuth para apps de terceros.
+    # Retornamos solo info de usuario con flag explícito.
+    return {"user": user_data, "balance_unavailable": True}
 
 
 @app.get("/api/mp/movements")
